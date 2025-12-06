@@ -107,14 +107,64 @@ Payload `POST /api/transactions`:
 
 Backend perlu di-deploy ke layanan yang mendukung Node.js. Pilihan populer:
 
-#### Option 1: Render.com
-1. Buat akun di [Render.com](https://render.com)
-2. Buat **Web Service** baru dari GitHub repository
-3. Konfigurasi:
+#### Option 1: Render.com (Recommended)
+
+**Langkah-langkah:**
+
+1. **Buat akun di [Render.com](https://render.com)**
+   - Login dengan GitHub account Anda
+
+2. **Buat Web Service baru:**
+   - Klik "New +" → "Web Service"
+   - Pilih repository: `pilarlabsid/cashflow`
+   - Klik "Connect"
+
+3. **Isi Settingan berikut:**
+
+   **Basic Settings:**
+   - **Name**: `cashflow-backend` (atau nama lain yang Anda inginkan)
+   - **Region**: Pilih region terdekat (misal: Singapore)
+   - **Branch**: `main`
+   - **Root Directory**: (kosongkan, biarkan default)
+   - **Environment**: `Node`
    - **Build Command**: `npm install`
    - **Start Command**: `npm start`
-   - **Environment**: `Node`
-4. Pastikan folder `data/` menggunakan **Persistent Disk** agar database tidak hilang
+
+   **Advanced Settings:**
+   - **Auto-Deploy**: `Yes` (otomatis deploy saat push ke GitHub)
+
+   **Environment Variables:**
+   - Klik "Add Environment Variable"
+   - Tambahkan:
+     - **Key**: `NODE_ENV`
+     - **Value**: `production`
+   - **Key**: `PORT`
+   - **Value**: (biarkan kosong, Render akan set otomatis)
+
+4. **Setup Persistent Disk untuk Database:**
+   - Scroll ke bagian "Disk"
+   - Klik "Add Disk"
+   - **Name**: `cashflow-data`
+   - **Mount Path**: `/opt/render/project/data`
+   - **Size**: `1 GB` (cukup untuk database kecil)
+   - **Note**: Ini penting agar database tidak hilang saat restart!
+
+5. **Pilih Plan:**
+   - **Free**: Gratis (dengan beberapa limitasi)
+   - **Starter**: $7/bulan (lebih stabil)
+
+6. **Klik "Create Web Service"**
+   - Render akan mulai build dan deploy
+   - Tunggu hingga selesai (sekitar 2-5 menit)
+
+7. **Dapatkan URL Backend:**
+   - Setelah deploy selesai, Anda akan mendapat URL seperti: `https://cashflow-backend.onrender.com`
+   - **Copy URL ini** untuk digunakan di Netlify environment variable
+
+**Catatan Penting:**
+- Free tier di Render akan "sleep" setelah 15 menit tidak aktif (wake up butuh ~30 detik)
+- Untuk production, pertimbangkan upgrade ke Starter plan ($7/bulan)
+- Database akan tersimpan di persistent disk dan tidak akan hilang
 
 #### Option 2: Railway.app
 1. Buat akun di [Railway.app](https://railway.app)
