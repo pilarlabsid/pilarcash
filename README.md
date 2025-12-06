@@ -84,7 +84,7 @@ Payload `POST /api/transactions`:
 
 2. **Buat repository baru di GitHub** dan push:
    ```bash
-   git remote add origin https://github.com/username/accountant.git
+   git remote add origin https://github.com/pilarlabsid/cashflow.git
    git branch -M main
    git push -u origin main
    ```
