@@ -22,6 +22,12 @@ Dashboard arus kas modern dengan backend **Node.js + Express + SQLite** serta fr
 │   │   └── lib/
 │   └── package.json
 ├── data/                # SQLite database (cashflow.db)
+├── docs/                # Dokumentasi
+│   ├── DEPLOYMENT.md
+│   ├── RAILWAY_SETUP.md
+│   ├── NETLIFY_FIX.md
+│   ├── WEBSOCKET_FIX.md
+│   └── ...
 ├── src/
 │   └── database.js      # Helper SQLite (create/read/update/delete)
 ├── server.js            # Express API + Socket.IO + static file server
@@ -109,30 +115,30 @@ Aplikasi menggunakan **Socket.IO** untuk real-time update:
 ### Quick Start Deployment
 
 1. **Deploy Backend ke Railway:**
-   - Lihat panduan lengkap: [RAILWAY_SETUP.md](./RAILWAY_SETUP.md)
+   - Lihat panduan lengkap: [RAILWAY_SETUP.md](./docs/RAILWAY_SETUP.md)
    - Build Command: `npm install`
    - Start Command: `npm start`
    - **PENTING**: Tambahkan Volume untuk folder `data/` (mount path: `/app/data`)
 
 2. **Deploy Frontend ke Netlify:**
-   - Lihat panduan lengkap: [DEPLOYMENT.md](./DEPLOYMENT.md)
+   - Lihat panduan lengkap: [DEPLOYMENT.md](./docs/DEPLOYMENT.md)
    - Base directory: `client`
    - Build command: `npm install && npm run build`
    - Publish directory: `client/dist`
    - **PENTING**: Set environment variable `VITE_API_URL` dengan URL backend Railway
 
 3. **Konfigurasi WebSocket:**
-   - Lihat panduan: [WEBSOCKET_FIX.md](./WEBSOCKET_FIX.md)
+   - Lihat panduan: [WEBSOCKET_FIX.md](./docs/WEBSOCKET_FIX.md)
    - Pastikan `VITE_API_URL` sudah di-set dengan benar di Netlify
    - WebSocket akan otomatis menggunakan polling sebagai fallback di Netlify
 
 ### Dokumentasi Deployment
 
-- 📘 [DEPLOYMENT.md](./DEPLOYMENT.md) - Panduan deployment umum
-- 🚂 [RAILWAY_SETUP.md](./RAILWAY_SETUP.md) - Setup backend di Railway
-- 🌐 [NETLIFY_FIX.md](./NETLIFY_FIX.md) - Fix masalah di Netlify
-- 🔌 [WEBSOCKET_FIX.md](./WEBSOCKET_FIX.md) - Fix WebSocket auto-update
-- 🔧 [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) - Troubleshooting guide
+- 📘 [DEPLOYMENT.md](./docs/DEPLOYMENT.md) - Panduan deployment umum
+- 🚂 [RAILWAY_SETUP.md](./docs/RAILWAY_SETUP.md) - Setup backend di Railway
+- 🌐 [NETLIFY_FIX.md](./docs/NETLIFY_FIX.md) - Fix masalah di Netlify
+- 🔌 [WEBSOCKET_FIX.md](./docs/WEBSOCKET_FIX.md) - Fix WebSocket auto-update
+- 🔧 [TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md) - Troubleshooting guide
 
 ## ⚙️ Environment Variables
 
