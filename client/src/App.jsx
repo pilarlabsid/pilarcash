@@ -44,6 +44,7 @@ function App() {
   const [isExportPinOpen, setIsExportPinOpen] = useState(false);
   const [pendingPayload, setPendingPayload] = useState(null);
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
+  const [currentTime, setCurrentTime] = useState(new Date());
 
   const resetPinFlow = () => {
     setPin("");
@@ -262,6 +263,15 @@ function App() {
     const timeout = setTimeout(() => setToast(null), 3500);
     return () => clearTimeout(timeout);
   }, [toast]);
+
+  // Update waktu setiap detik
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, []);
 
   const sortedEntries = useMemo(() => {
     return [...entries].sort((a, b) => {
@@ -659,10 +669,30 @@ const runningEntries = useMemo(() => {
 
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-4 pt-8 sm:px-6 lg:px-8">
         <header className="flex flex-col gap-5 rounded-3xl bg-gradient-to-r from-slate-900 via-indigo-900 to-slate-800 px-6 py-8 text-white shadow-soft sm:px-8">
-          <div className="text-center sm:text-left">
-            <p className="text-xs uppercase tracking-[0.4em] text-indigo-200">
-              Prava Cash
-            </p>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-center sm:text-left">
+              <p className="text-xs uppercase tracking-[0.4em] text-indigo-200">
+                Prava Cash
+              </p>
+            </div>
+            <div className="text-center sm:text-right">
+              <p className="text-sm font-medium text-white/90">
+                {currentTime.toLocaleDateString("id-ID", {
+                  weekday: "long",
+                  day: "numeric",
+                  month: "long",
+                  year: "numeric",
+                })}
+              </p>
+              <p className="text-lg font-semibold text-white">
+                {currentTime.toLocaleTimeString("id-ID", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                  hour12: false,
+                })}
+              </p>
+            </div>
           </div>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex flex-col gap-3 sm:flex-row sm:flex-1">
