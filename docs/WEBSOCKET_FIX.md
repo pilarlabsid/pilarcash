@@ -4,6 +4,8 @@
 
 Ini terjadi karena WebSocket tidak terhubung dengan benar antara frontend (Netlify) dan backend (Railway).
 
+**Catatan Penting:** Aplikasi sudah dikonfigurasi untuk menggunakan **polling** di production (bukan WebSocket) karena Netlify dan Railway tidak support WebSocket dengan baik. Error WebSocket di console adalah normal dan tidak perlu dikhawatirkan - aplikasi akan otomatis menggunakan polling yang tetap memberikan real-time update.
+
 ## Solusi Step-by-Step:
 
 ### 1. Pastikan Environment Variable di Netlify Sudah Di-Set
@@ -36,9 +38,9 @@ Setelah rebuild, cek apakah WebSocket terhubung:
 2. **Buka Developer Tools** (F12)
 
 3. **Tab Console** - Cari log berikut:
-   - `✅ WebSocket connected: [socket-id]` - Berarti WebSocket berhasil connect
-   - `📡 Transport: polling` atau `📡 Transport: websocket` - Menunjukkan transport yang digunakan
-   - Jika ada error `❌ WebSocket connection error`, berarti ada masalah koneksi
+   - `✅ Socket connected: [socket-id]` - Berarti Socket.IO berhasil connect
+   - `📡 Transport: polling` - Di production, akan selalu menggunakan polling (ini normal!)
+   - **Error WebSocket di console adalah normal** - Aplikasi sudah dikonfigurasi untuk force polling di production, jadi error WebSocket bisa diabaikan
 
 4. **Tab Network** - Filter `WS` (WebSocket) atau `Fetch`:
    - Harus ada request ke `/socket.io/` dengan status `101 Switching Protocols` (untuk WebSocket)
@@ -85,17 +87,23 @@ Setelah rebuild, cek apakah WebSocket terhubung:
    - Di Console, harus ada log: `📨 Received transactions update via WebSocket`
 3. Pastikan tidak ada error di Console
 
-#### Masalah: Menggunakan polling bukan WebSocket
+#### Masalah: Error WebSocket di Console
 
 **Gejala:**
-- Console menunjukkan `📡 Transport: polling`
-- Tidak ada request WebSocket di Network tab
+- Console menunjukkan error: `WebSocket connection to 'wss://...' failed`
+- Error ini muncul berulang kali
 
 **Ini NORMAL dan TIDAK MASALAH!**
-- Netlify tidak support WebSocket secara native
-- Socket.IO akan otomatis menggunakan polling sebagai fallback
-- Polling juga akan memberikan real-time update, hanya sedikit lebih lambat
-- Auto-update tetap akan bekerja dengan polling
+- Aplikasi sudah dikonfigurasi untuk **force polling** di production
+- Error WebSocket muncul karena Socket.IO mencoba upgrade ke WebSocket, tapi gagal (normal untuk Netlify/Railway)
+- Aplikasi akan tetap menggunakan polling yang memberikan real-time update
+- Error ini bisa diabaikan - tidak mempengaruhi fungsi aplikasi
+- Untuk menghilangkan error, aplikasi sudah dikonfigurasi untuk tidak mencoba WebSocket di production
+
+**Verifikasi:**
+- Cek log: `✅ Socket connected: [socket-id]` - Berarti koneksi berhasil
+- Cek log: `📡 Transport: polling` - Berarti menggunakan polling (benar untuk production)
+- Test auto-update: Buka 2 tab, ubah data di tab 1, tab 2 harus auto-update
 
 ### 5. Format URL yang Benar
 

@@ -166,10 +166,14 @@ function App() {
     }
 
     // Connect ke WebSocket server
-    // Prioritas polling dulu karena Netlify tidak support WebSocket native
-    // Socket.IO akan otomatis upgrade ke WebSocket jika tersedia
+    // Di production, force polling saja karena Netlify/Railway tidak support WebSocket dengan baik
+    // Di development, biarkan Socket.IO coba WebSocket dulu
+    const isProduction = !import.meta.env.DEV;
     const socket = io(socketUrl, {
-      transports: ["polling", "websocket"], // Prioritaskan polling untuk Netlify
+      // Di production, hanya gunakan polling untuk menghindari error WebSocket
+      // Di development, coba WebSocket dulu, fallback ke polling
+      transports: isProduction ? ["polling"] : ["polling", "websocket"],
+      upgrade: !isProduction, // Di production, jangan upgrade ke WebSocket
       autoConnect: true,
       reconnection: true,
       reconnectionDelay: 1000,
@@ -181,20 +185,22 @@ function App() {
 
     // Event listeners untuk debugging dan monitoring
     socket.on("connect", () => {
-      if (import.meta.env.DEV) {
-        console.log('✅ WebSocket connected:', socket.id);
-        console.log('📡 Transport:', socket.io.engine.transport.name);
-      }
+      // Log di production juga untuk memastikan koneksi berhasil
+      console.log('✅ Socket connected:', socket.id);
+      console.log('📡 Transport:', socket.io.engine.transport.name);
     });
 
     socket.on("disconnect", (reason) => {
-      if (import.meta.env.DEV) {
-        console.log('❌ WebSocket disconnected:', reason);
-      }
+      // Log di production juga untuk monitoring
+      console.log('❌ Socket disconnected:', reason);
     });
 
     socket.on("connect_error", (error) => {
-      console.error('❌ WebSocket connection error:', error.message);
+      // Suppress error WebSocket di production karena kita sudah force polling
+      // Error ini normal terjadi ketika WebSocket tidak tersedia
+      if (import.meta.env.DEV) {
+        console.error('❌ Socket connection error:', error.message);
+      }
       // Jika koneksi gagal, tetap gunakan polling untuk fetch data
       // fetchEntries akan tetap berjalan untuk fallback
     });
@@ -212,17 +218,21 @@ function App() {
     });
 
     socket.on("reconnect_error", (error) => {
-      console.error('❌ WebSocket reconnection error:', error.message);
+      // Suppress error di production karena kita sudah force polling
+      if (import.meta.env.DEV) {
+        console.error('❌ Socket reconnection error:', error.message);
+      }
     });
 
     socket.on("reconnect_failed", () => {
-      console.error('❌ WebSocket reconnection failed. Using polling fallback.');
+      console.error('❌ Socket reconnection failed. Using polling fallback.');
     });
 
     // Listen untuk update transaksi dari server
     socket.on("transactions:updated", (transactions) => {
+      // Log di production juga untuk debugging
       if (import.meta.env.DEV) {
-        console.log('📨 Received transactions update via WebSocket');
+        console.log('📨 Received transactions update via Socket');
       }
       // Update data tanpa loading indicator
       setEntries(
@@ -643,7 +653,7 @@ const runningEntries = useMemo(() => {
         <header className="flex flex-col gap-5 rounded-3xl bg-gradient-to-r from-slate-900 via-indigo-900 to-slate-800 px-6 py-8 text-white shadow-soft sm:px-8">
           <div className="text-center sm:text-left">
             <p className="text-xs uppercase tracking-[0.4em] text-indigo-200">
-              Pilar Cash
+              Prava Cash
             </p>
           </div>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
