@@ -3,7 +3,8 @@ import { formatCurrency, formatDate, getToday } from "./lib/format";
 import { utils as XLSXUtils, writeFile as writeXLSXFile } from "xlsx";
 import { io } from "socket.io-client";
 
-const PIN_CODE = "6745";
+// PIN Code dari environment variable, fallback ke default jika tidak di-set
+const PIN_CODE = import.meta.env.VITE_PIN_CODE || "6745";
 
 const createInitialForm = (overrides = {}) => ({
   description: "",

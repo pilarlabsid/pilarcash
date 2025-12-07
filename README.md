@@ -144,9 +144,10 @@ Aplikasi menggunakan **Socket.IO** untuk real-time update:
 
 ### Frontend (Netlify)
 
-| Variable      | Deskripsi                          | Contoh                                    |
-| ------------- | ---------------------------------- | ----------------------------------------- |
-| `VITE_API_URL` | URL backend Railway (tanpa trailing slash) | `https://cashflow-backend.up.railway.app` |
+| Variable      | Deskripsi                          | Contoh                                    | Wajib |
+| ------------- | ---------------------------------- | ----------------------------------------- | ----- |
+| `VITE_API_URL` | URL backend Railway (tanpa trailing slash) | `https://cashflow-backend.up.railway.app` | ✅ Ya |
+| `VITE_PIN_CODE` | PIN 4-digit untuk proteksi transaksi | `6745` | ❌ Opsional (default: `6745`) |
 
 ### Backend (Railway)
 
@@ -158,8 +159,21 @@ Aplikasi menggunakan **Socket.IO** untuk real-time update:
 ## 🔐 Keamanan
 
 - **PIN Protection**: Semua operasi penting (create, update, delete, export) memerlukan PIN 4-digit
-- **Default PIN**: `6745` (dapat diubah di `client/src/App.jsx`)
+- **Default PIN**: `6745` (dapat diubah melalui environment variable `VITE_PIN_CODE` di Netlify)
 - **CORS**: Backend dikonfigurasi untuk menerima request dari semua origin (untuk production, pertimbangkan membatasi ke domain Netlify)
+
+### Mengubah PIN
+
+Untuk mengubah PIN di production:
+
+1. Buka Netlify Dashboard → Site settings → Environment variables
+2. Tambahkan variable baru:
+   - **Key**: `VITE_PIN_CODE`
+   - **Value**: PIN 4-digit Anda (contoh: `1234`)
+   - **Scope**: All scopes
+3. Rebuild dengan "Clear cache and deploy site"
+
+**Catatan**: Jika `VITE_PIN_CODE` tidak di-set, aplikasi akan menggunakan PIN default `6745`.
 
 ## 📝 Catatan Penting
 
@@ -180,4 +194,4 @@ MIT
 
 ## 👥 Credits
 
-Developed by Prava Labs
+Developed by Pilar Labs

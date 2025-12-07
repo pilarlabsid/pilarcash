@@ -49,12 +49,24 @@ Aplikasi ini menggunakan arsitektur terpisah:
 
 3. **Environment Variables** (PENTING!):
    - Buka **Site settings** → **Build & deploy** → **Environment variables**
+   
+   **Variable Wajib:**
    - Klik **Add a variable**
    - **Key**: `VITE_API_URL`
    - **Value**: URL backend Railway Anda (contoh: `https://cashflow-backend.up.railway.app`)
    - **⚠️ PENTING**: 
      - Jangan ada trailing slash (`/`) di akhir
      - Harus pakai `https://`, bukan `http://`
+   - **Scope**: Pilih **All scopes**
+   - Klik **Save**
+   
+   **Variable Opsional (PIN):**
+   - Klik **Add a variable** lagi
+   - **Key**: `VITE_PIN_CODE`
+   - **Value**: PIN 4-digit untuk proteksi transaksi (contoh: `1234`)
+   - **⚠️ Catatan**: 
+     - Jika tidak di-set, akan menggunakan PIN default: `6745`
+     - PIN ini digunakan untuk semua operasi penting (create, update, delete, export)
    - **Scope**: Pilih **All scopes**
    - Klik **Save**
 
