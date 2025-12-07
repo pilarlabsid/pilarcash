@@ -1238,7 +1238,7 @@ const runningEntries = useMemo(() => {
       )}
     </div>
       <footer className="mx-auto mb-1 mt-2 w-full max-w-6xl px-4 text-center text-xs font-semibold text-slate-400 sm:px-6 lg:px-8">
-        © {new Date().getFullYear()} Developed by Prava Labs
+        © {new Date().getFullYear()} Developed by Pilar Labs
       </footer>
     </>
   );
