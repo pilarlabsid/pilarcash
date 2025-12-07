@@ -185,14 +185,18 @@ function App() {
 
     // Event listeners untuk debugging dan monitoring
     socket.on("connect", () => {
-      // Log di production juga untuk memastikan koneksi berhasil
-      console.log('✅ Socket connected:', socket.id);
-      console.log('📡 Transport:', socket.io.engine.transport.name);
+      // Log hanya di development
+      if (import.meta.env.DEV) {
+        console.log('✅ Socket connected:', socket.id);
+        console.log('📡 Transport:', socket.io.engine.transport.name);
+      }
     });
 
     socket.on("disconnect", (reason) => {
-      // Log di production juga untuk monitoring
-      console.log('❌ Socket disconnected:', reason);
+      // Log hanya di development
+      if (import.meta.env.DEV) {
+        console.log('❌ Socket disconnected:', reason);
+      }
     });
 
     socket.on("connect_error", (error) => {
@@ -225,7 +229,10 @@ function App() {
     });
 
     socket.on("reconnect_failed", () => {
-      console.error('❌ Socket reconnection failed. Using polling fallback.');
+      // Log hanya di development
+      if (import.meta.env.DEV) {
+        console.error('❌ Socket reconnection failed. Using polling fallback.');
+      }
     });
 
     // Listen untuk update transaksi dari server
