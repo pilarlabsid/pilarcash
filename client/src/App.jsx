@@ -521,7 +521,7 @@ const runningEntries = useMemo(() => {
     });
     const workbook = XLSXUtils.book_new();
     XLSXUtils.book_append_sheet(workbook, worksheet, "Transaksi");
-    const filename = `pilar-cash-transactions-${new Date()
+    const filename = `prava-cash-transactions-${new Date()
       .toISOString()
       .slice(0, 10)}.xlsx`;
     writeXLSXFile(workbook, filename);
@@ -1200,7 +1200,7 @@ const runningEntries = useMemo(() => {
       )}
     </div>
       <footer className="mx-auto mb-1 mt-2 w-full max-w-6xl px-4 text-center text-xs font-semibold text-slate-400 sm:px-6 lg:px-8">
-        © {new Date().getFullYear()} Developed by Pilar Labs
+        © {new Date().getFullYear()} Developed by Prava Labs
       </footer>
     </>
   );

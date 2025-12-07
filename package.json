@@ -1,7 +1,7 @@
 {
-  "name": "pilar-cash",
+  "name": "prava-cash",
   "version": "1.0.0",
-  "description": "Pilar Cash - Cashflow Management Dashboard with Node.js backend",
+  "description": "Prava Cash - Cashflow Management Dashboard with Node.js backend",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

@@ -33,7 +33,7 @@ Ini terjadi karena WebSocket tidak terhubung dengan benar antara frontend (Netli
 
 Setelah rebuild, cek apakah WebSocket terhubung:
 
-1. **Buka aplikasi di Netlify** (contoh: `https://pilar-cash.netlify.app`)
+1. **Buka aplikasi di Netlify** (contoh: `https://prava-cash.netlify.app`)
 
 2. **Buka Developer Tools** (F12)
 

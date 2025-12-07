@@ -1,6 +1,6 @@
-# Panduan Deployment Pilar Cash
+# Panduan Deployment Prava Cash
 
-Panduan lengkap untuk deploy aplikasi Pilar Cash ke production.
+Panduan lengkap untuk deploy aplikasi Prava Cash ke production.
 
 ## 📋 Overview
 

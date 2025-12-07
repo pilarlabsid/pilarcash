@@ -1,6 +1,6 @@
-# Dokumentasi Pilar Cash
+# Dokumentasi Prava Cash
 
-Selamat datang di dokumentasi Pilar Cash. Dokumentasi ini berisi panduan lengkap untuk setup, deployment, dan troubleshooting aplikasi.
+Selamat datang di dokumentasi Prava Cash. Dokumentasi ini berisi panduan lengkap untuk setup, deployment, dan troubleshooting aplikasi.
 
 ## 📚 Daftar Dokumentasi
 

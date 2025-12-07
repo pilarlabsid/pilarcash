@@ -10,7 +10,7 @@ Ini terjadi karena frontend di Netlify tidak bisa connect ke backend Railway.
 
 1. **Buka Netlify Dashboard:**
    - Login ke https://app.netlify.com
-   - Pilih site Anda (pilar-cash atau nama site Anda)
+   - Pilih site Anda (prava-cash atau nama site Anda)
 
 2. **Buka Environment Variables:**
    - Klik **Site settings** (di menu atas)
@@ -52,7 +52,7 @@ Setelah rebuild, cek apakah variable ter-load:
 
 ### 4. Test Aplikasi
 
-1. Buka URL Netlify Anda (contoh: `https://pilar-cash.netlify.app`)
+1. Buka URL Netlify Anda (contoh: `https://prava-cash.netlify.app`)
 2. Buka **Developer Tools** (F12)
 3. Tab **Console** - seharusnya tidak ada error
 4. Tab **Network** - filter `XHR` atau `Fetch`

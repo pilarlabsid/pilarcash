@@ -1,4 +1,4 @@
-# Pilar Cash - Cashflow Management Dashboard
+# Prava Cash - Cashflow Management Dashboard
 
 Dashboard arus kas modern dengan backend **Node.js + Express + SQLite** serta frontend **React (Vite) + Tailwind CSS**. Dilengkapi dengan **WebSocket (Socket.IO)** untuk real-time update otomatis di semua client yang terhubung.
 
@@ -180,4 +180,4 @@ MIT
 
 ## 👥 Credits
 
-Developed by Pilar Labs
+Developed by Prava Labs
