@@ -1,15 +1,18 @@
 # Prava Cash - Cashflow Management Dashboard
 
-Dashboard arus kas modern dengan backend **Node.js + Express + SQLite** serta frontend **React (Vite) + Tailwind CSS**. Dilengkapi dengan **WebSocket (Socket.IO)** untuk real-time update otomatis di semua client yang terhubung.
+Dashboard arus kas modern dengan backend **Node.js + Express + PostgreSQL** serta frontend **React (Vite) + Tailwind CSS**. Dilengkapi dengan **WebSocket (Socket.IO)** untuk real-time update otomatis di semua client yang terhubung. **Multi-user support** dengan sistem autentikasi lengkap.
 
 ## ✨ Fitur
 
+- 👥 **Multi-User**: Setiap user memiliki data transaksi terpisah
+- 🔐 **Authentication**: Sistem login dan register dengan JWT token
 - 📊 **Dashboard Real-time**: Auto-update otomatis menggunakan WebSocket ketika ada perubahan data
 - 💰 **Manajemen Transaksi**: Input, edit, dan hapus transaksi dengan validasi lengkap
 - 🔒 **Keamanan PIN**: Proteksi dengan PIN 4-digit untuk semua operasi penting
 - 📱 **Responsive Design**: UI modern dan responsif dengan Tailwind CSS
 - 📈 **Running Balance**: Perhitungan saldo berjalan otomatis
 - 📥 **Export Excel**: Unduh data transaksi dalam format Excel
+- 📤 **Import Excel**: Import data transaksi dari file Excel
 - 🎨 **Modern UI**: Kartu statistik, form modern, dan tabel responsif
 
 ## 🏗️ Struktur Proyek
@@ -21,7 +24,6 @@ Dashboard arus kas modern dengan backend **Node.js + Express + SQLite** serta fr
 │   │   ├── App.jsx      # Komponen utama dengan WebSocket
 │   │   └── lib/
 │   └── package.json
-├── data/                # SQLite database (cashflow.db)
 ├── docs/                # Dokumentasi
 │   ├── DEPLOYMENT.md
 │   ├── RAILWAY_SETUP.md
@@ -29,7 +31,8 @@ Dashboard arus kas modern dengan backend **Node.js + Express + SQLite** serta fr
 │   ├── WEBSOCKET_FIX.md
 │   └── ...
 ├── src/
-│   └── database.js      # Helper SQLite (create/read/update/delete)
+│   ├── database.js      # Helper PostgreSQL (create/read/update/delete)
+│   └── auth.js         # Authentication helpers (JWT, bcrypt)
 ├── server.js            # Express API + Socket.IO + static file server
 ├── package.json         # Backend dependencies
 └── netlify.toml         # Konfigurasi Netlify
@@ -39,6 +42,28 @@ Dashboard arus kas modern dengan backend **Node.js + Express + SQLite** serta fr
 
 ### Prasyarat
 - Node.js ≥18
+- PostgreSQL ≥12 (atau gunakan managed database seperti Supabase/Railway)
+
+### Setup Database
+
+1. **Install PostgreSQL** (jika belum):
+   - macOS: `brew install postgresql`
+   - Ubuntu: `sudo apt-get install postgresql`
+   - Windows: Download dari [postgresql.org](https://www.postgresql.org/download/)
+
+2. **Buat database:**
+   ```bash
+   createdb pravacash
+   ```
+
+3. **Setup environment variables:**
+   ```bash
+   # Buat file .env di root project
+   DATABASE_URL=postgresql://username:password@localhost:5432/pravacash
+   JWT_SECRET=your-secret-key-change-in-production
+   JWT_EXPIRES_IN=7d
+   PORT=4000
+   ```
 
 ### Instalasi
 
@@ -69,18 +94,32 @@ Dashboard arus kas modern dengan backend **Node.js + Express + SQLite** serta fr
    npm start
    ```
 
-Database SQLite akan otomatis dibuat di `data/cashflow.db` jika belum ada.
+Database schema akan otomatis dibuat saat pertama kali menjalankan aplikasi.
 
 ## 📡 API Endpoints
 
+### Authentication (Public)
 | Method | Path                      | Deskripsi                           |
 | ------ | ------------------------- | ----------------------------------- |
-| GET    | `/api/transactions`       | Ambil semua transaksi               |
+| POST   | `/api/auth/register`      | Daftar user baru                    |
+| POST   | `/api/auth/login`         | Login user                          |
+| GET    | `/api/auth/verify`         | Verify token (protected)             |
+
+### Transactions (Protected - requires JWT token)
+| Method | Path                      | Deskripsi                           |
+| ------ | ------------------------- | ----------------------------------- |
+| GET    | `/api/transactions`       | Ambil semua transaksi user          |
 | POST   | `/api/transactions`       | Tambah transaksi baru               |
 | PUT    | `/api/transactions/:id`   | Update transaksi                    |
 | DELETE | `/api/transactions/:id`   | Hapus satu transaksi                |
-| DELETE | `/api/transactions`       | Hapus semua transaksi               |
+| DELETE | `/api/transactions`       | Hapus semua transaksi user          |
+
+### Health Check
+| Method | Path                      | Deskripsi                           |
+| ------ | ------------------------- | ----------------------------------- |
 | GET    | `/health`                 | Health check endpoint               |
+
+**Catatan**: Semua endpoint transactions memerlukan header `Authorization: Bearer <token>`
 
 ### Contoh Request
 
@@ -149,12 +188,15 @@ Aplikasi menggunakan **Socket.IO** untuk real-time update:
 | `VITE_API_URL` | URL backend Railway (tanpa trailing slash) | `https://cashflow-backend.up.railway.app` | ✅ Ya |
 | `VITE_PIN_CODE` | PIN 4-digit untuk proteksi transaksi | `6745` | ❌ Opsional (default: `6745`) |
 
-### Backend (Railway)
+### Backend (Railway/Server)
 
-| Variable  | Deskripsi              | Default |
-| --------- | ---------------------- | ------- |
-| `PORT`    | Port server            | 4000    |
-| `NODE_ENV`| Environment mode       | -       |
+| Variable      | Deskripsi                          | Contoh                                    | Wajib |
+| ------------- | ---------------------------------- | ----------------------------------------- | ----- |
+| `DATABASE_URL` | PostgreSQL connection string | `postgresql://user:pass@host:5432/db` | ✅ Ya |
+| `JWT_SECRET`   | Secret key untuk JWT token | `your-secret-key` | ✅ Ya |
+| `JWT_EXPIRES_IN` | JWT token expiration | `7d` | ❌ Opsional (default: `7d`) |
+| `PORT`         | Port server                        | `4000` | ❌ Opsional (default: `4000`) |
+| `NODE_ENV`     | Environment mode                   | `production` | ❌ Opsional |
 
 ## 🔐 Keamanan
 

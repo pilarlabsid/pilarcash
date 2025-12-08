@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { formatCurrency, formatDate, getToday } from "./lib/format";
-import { utils as XLSXUtils, writeFile as writeXLSXFile } from "xlsx";
+import { utils as XLSXUtils, writeFile as writeXLSXFile, read as readXLSX } from "xlsx";
 import { io } from "socket.io-client";
 
-// PIN Code dari environment variable, fallback ke default jika tidak di-set
-const PIN_CODE = import.meta.env.VITE_PIN_CODE || "6745";
+// PIN Code default (akan di-override oleh user settings)
+const DEFAULT_PIN_CODE = import.meta.env.VITE_PIN_CODE || "6745";
 
 const createInitialForm = (overrides = {}) => ({
   description: "",
@@ -24,6 +24,25 @@ const inputClasses =
   "w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-900 outline-none transition focus:border-indigo-500 focus:bg-white focus:ring-2 focus:ring-indigo-100";
 
 function App() {
+  // Authentication state
+  const [user, setUser] = useState(null);
+  const [token, setToken] = useState(localStorage.getItem("token"));
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+  const [isRegisterModalOpen, setIsRegisterModalOpen] = useState(false);
+  const [loginForm, setLoginForm] = useState({ email: "", password: "" });
+  const [registerForm, setRegisterForm] = useState({ email: "", password: "", name: "" });
+  const [authError, setAuthError] = useState("");
+  
+  // Settings state
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState({ name: "", email: "", pinEnabled: false });
+  const [settingsForm, setSettingsForm] = useState({ name: "", email: "", pin: "", pinEnabled: false });
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsError, setSettingsError] = useState("");
+
+  // Existing state
   const [entries, setEntries] = useState([]);
   const [form, setForm] = useState(createInitialForm);
   const [loading, setLoading] = useState(true);
@@ -42,9 +61,26 @@ function App() {
   const modalRef = useRef(null);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [isExportPinOpen, setIsExportPinOpen] = useState(false);
+  const [isImportPinOpen, setIsImportPinOpen] = useState(false);
+  const [isImportFileOpen, setIsImportFileOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importFile, setImportFile] = useState(null);
+  const [importPreview, setImportPreview] = useState([]);
   const [pendingPayload, setPendingPayload] = useState(null);
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  
+  // Admin state - auto set to true if user is admin
+  const [isAdminPage, setIsAdminPage] = useState(false);
+  const [adminStats, setAdminStats] = useState(null);
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [adminTransactions, setAdminTransactions] = useState([]);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminTab, setAdminTab] = useState("dashboard"); // "dashboard" | "users" | "transactions"
+  const [selectedUser, setSelectedUser] = useState(null);
+  const [isEditUserModalOpen, setIsEditUserModalOpen] = useState(false);
+  const [editUserForm, setEditUserForm] = useState({ name: "", email: "", role: "user" });
 
   const resetPinFlow = () => {
     setPin("");
@@ -64,21 +100,13 @@ function App() {
     }, 0);
   };
 
-  const validatePin = () => {
-    if (pin !== PIN_CODE) {
-      setPinError("PIN salah. Coba lagi.");
-      return false;
-    }
-    setPinError("");
-    return true;
-  };
-
   const pinDescriptions = {
     create: "Masukkan PIN 4-digit untuk menyimpan transaksi ini.",
     edit: "Masukkan PIN 4-digit untuk memperbarui transaksi ini.",
     delete: "Masukkan PIN 4-digit untuk menghapus transaksi ini.",
     reset: "Masukkan PIN 4-digit untuk menghapus semua transaksi.",
     export: "Masukkan PIN 4-digit untuk mengunduh transaksi.",
+    import: "Masukkan PIN 4-digit untuk mengimpor transaksi dari Excel.",
   };
 
   // Helper untuk mendapatkan base API URL
@@ -93,7 +121,437 @@ function App() {
     return import.meta.env.DEV ? "" : window.location.origin;
   };
 
+  // Helper untuk membuat fetch dengan authentication
+  // Menggunakan useCallback dengan dependency token
+  const authenticatedFetch = useCallback(async (url, options = {}) => {
+    const headers = {
+      "Content-Type": "application/json",
+      ...options.headers,
+    };
+
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    const response = await fetch(url, {
+      ...options,
+      headers,
+    });
+
+    if (response.status === 401) {
+      // Token expired or invalid - logout
+      localStorage.removeItem("token");
+      localStorage.removeItem("user");
+      setToken(null);
+      setUser(null);
+      setIsAuthenticated(false);
+      setEntries([]);
+      throw new Error("Session expired. Silakan login kembali.");
+    }
+
+    return response;
+  }, [token]);
+
+  // Fetch user settings
+  const fetchSettings = useCallback(async () => {
+    if (!token || !isAuthenticated) return;
+
+    try {
+      const apiBase = getApiUrl();
+      // Use authenticatedFetch from closure
+      const headers = {
+        "Content-Type": "application/json",
+      };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const response = await fetch(`${apiBase}/api/user/settings`, {
+        headers,
+      });
+      
+      if (response.status === 401) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        setToken(null);
+        setUser(null);
+        setIsAuthenticated(false);
+        setEntries([]);
+        return;
+      }
+      
+      if (response.ok) {
+        const data = await response.json();
+        setSettings({
+          name: data.name,
+          email: data.email,
+          pinEnabled: data.pinEnabled || false,
+        });
+        setSettingsForm(prev => ({
+          ...prev,
+          name: data.name,
+          email: data.email,
+          pinEnabled: data.pinEnabled || false,
+        }));
+      }
+    } catch (error) {
+      console.error("Failed to fetch settings:", error);
+    }
+  }, [token, isAuthenticated]);
+
+  // Verify PIN dengan user's PIN
+  const validatePin = useCallback(async () => {
+    if (!settings.pinEnabled) {
+      // Jika PIN tidak enabled, skip validation
+      setPinError("");
+      return true;
+    }
+
+    if (!pin || pin.length !== 4) {
+      setPinError("PIN harus 4 digit.");
+      return false;
+    }
+
+    // Verify PIN dengan backend
+    try {
+      const apiBase = getApiUrl();
+      const headers = {
+        "Content-Type": "application/json",
+      };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const response = await fetch(`${apiBase}/api/user/verify-pin`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ pin }),
+      });
+
+      if (response.status === 401) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        setToken(null);
+        setUser(null);
+        setIsAuthenticated(false);
+        setEntries([]);
+        setPinError("Session expired. Silakan login kembali.");
+        return false;
+      }
+
+      if (response.ok) {
+        setPinError("");
+        return true;
+      } else {
+        const data = await response.json();
+        setPinError(data.message || "PIN salah. Coba lagi.");
+        return false;
+      }
+    } catch (error) {
+      setPinError("Gagal memverifikasi PIN.");
+      return false;
+    }
+  }, [settings.pinEnabled, pin, token]);
+
+  // Admin functions
+  const fetchAdminStats = useCallback(async () => {
+    if (!token || !user || user.role !== 'admin') return;
+    
+    try {
+      const apiBase = getApiUrl();
+      const headers = {
+        "Content-Type": "application/json",
+      };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const response = await fetch(`${apiBase}/api/admin/stats`, { headers });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setAdminStats(data);
+      }
+    } catch (error) {
+      console.error("Failed to fetch admin stats:", error);
+    }
+  }, [token, user]);
+
+  const fetchAdminUsers = useCallback(async () => {
+    if (!token || !user || user.role !== 'admin') return;
+    
+    try {
+      const apiBase = getApiUrl();
+      const headers = {
+        "Content-Type": "application/json",
+      };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const response = await fetch(`${apiBase}/api/admin/users`, { headers });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setAdminUsers(data);
+      }
+    } catch (error) {
+      console.error("Failed to fetch admin users:", error);
+    }
+  }, [token, user]);
+
+  const fetchAdminTransactions = useCallback(async () => {
+    if (!token || !user || user.role !== 'admin') return;
+    
+    try {
+      const apiBase = getApiUrl();
+      const headers = {
+        "Content-Type": "application/json",
+      };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const response = await fetch(`${apiBase}/api/admin/transactions`, { headers });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setAdminTransactions(data);
+      }
+    } catch (error) {
+      console.error("Failed to fetch admin transactions:", error);
+    }
+  }, [token, user]);
+
+  const handleEditUser = (userData) => {
+    setSelectedUser(userData);
+    setEditUserForm({
+      name: userData.name,
+      email: userData.email,
+      role: userData.role || 'user',
+    });
+    setIsEditUserModalOpen(true);
+  };
+
+  const handleUpdateUser = async (e) => {
+    e.preventDefault();
+    if (!token || !selectedUser) return;
+    
+    setAdminLoading(true);
+    try {
+      const apiBase = getApiUrl();
+      const headers = {
+        "Content-Type": "application/json",
+      };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const response = await fetch(`${apiBase}/api/admin/users/${selectedUser.id}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify(editUserForm),
+      });
+      
+      if (response.ok) {
+        setToast({ type: "success", message: "User berhasil diperbarui." });
+        setIsEditUserModalOpen(false);
+        fetchAdminUsers();
+      } else {
+        const data = await response.json();
+        setToast({ type: "error", message: data.message || "Gagal memperbarui user." });
+      }
+    } catch (error) {
+      setToast({ type: "error", message: "Gagal memperbarui user." });
+    } finally {
+      setAdminLoading(false);
+    }
+  };
+
+  const handleDeleteUser = async (userId) => {
+    if (!token || !confirm("Yakin ingin menghapus user ini? Semua transaksinya akan ikut terhapus.")) return;
+    
+    setAdminLoading(true);
+    try {
+      const apiBase = getApiUrl();
+      const headers = {
+        "Content-Type": "application/json",
+      };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const response = await fetch(`${apiBase}/api/admin/users/${userId}`, {
+        method: "DELETE",
+        headers,
+      });
+      
+      if (response.ok) {
+        setToast({ type: "success", message: "User berhasil dihapus." });
+        fetchAdminUsers();
+      } else {
+        const data = await response.json();
+        setToast({ type: "error", message: data.message || "Gagal menghapus user." });
+      }
+    } catch (error) {
+      setToast({ type: "error", message: "Gagal menghapus user." });
+    } finally {
+      setAdminLoading(false);
+    }
+  };
+
+  // Load admin data when admin page is opened
+  useEffect(() => {
+    if (isAdminPage && user?.role === 'admin') {
+      fetchAdminStats();
+      fetchAdminUsers();
+      fetchAdminTransactions();
+    }
+  }, [isAdminPage, user, fetchAdminStats, fetchAdminUsers, fetchAdminTransactions]);
+
+  // Authentication functions
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setAuthError("");
+    
+    try {
+      const apiBase = getApiUrl();
+      const response = await fetch(`${apiBase}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(loginForm),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message || "Login gagal.");
+      }
+
+      localStorage.setItem("token", data.token);
+      localStorage.setItem("user", JSON.stringify(data.user));
+      setToken(data.token);
+      setUser(data.user);
+      setIsAuthenticated(true);
+      setIsLoginModalOpen(false);
+      setLoginForm({ email: "", password: "" });
+      setToast({ type: "success", message: `Selamat datang, ${data.user.name}!` });
+      fetchEntries();
+      // Fetch settings setelah login
+      setTimeout(() => {
+        fetchSettings();
+      }, 100);
+    } catch (error) {
+      console.error(error);
+      setAuthError(error.message);
+    }
+  };
+
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    setAuthError("");
+
+    if (registerForm.password.length < 6) {
+      setAuthError("Password minimal 6 karakter.");
+      return;
+    }
+
+    try {
+      const apiBase = getApiUrl();
+      const response = await fetch(`${apiBase}/api/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(registerForm),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message || "Registrasi gagal.");
+      }
+
+      localStorage.setItem("token", data.token);
+      localStorage.setItem("user", JSON.stringify(data.user));
+      setToken(data.token);
+      setUser(data.user);
+      setIsAuthenticated(true);
+      // Jika admin, langsung set ke admin page
+      if (data.user.role === 'admin') {
+        setIsAdminPage(true);
+      }
+      setIsRegisterModalOpen(false);
+      setRegisterForm({ email: "", password: "", name: "" });
+      setToast({ type: "success", message: `Akun berhasil dibuat, ${data.user.name}!` });
+      fetchEntries();
+      // Fetch settings setelah register
+      setTimeout(() => {
+        fetchSettings();
+      }, 100);
+    } catch (error) {
+      console.error(error);
+      setAuthError(error.message);
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    setToken(null);
+    setUser(null);
+    setIsAuthenticated(false);
+    setEntries([]);
+    setIsAdminPage(false);
+    setToast({ type: "success", message: "Anda telah logout." });
+  };
+
+  // Verify token on mount
+  useEffect(() => {
+    const verifyToken = async () => {
+      if (!token) {
+        setAuthLoading(false);
+        return;
+      }
+
+      try {
+        const apiBase = getApiUrl();
+        const headers = {
+          "Content-Type": "application/json",
+        };
+        if (token) {
+          headers["Authorization"] = `Bearer ${token}`;
+        }
+        const response = await fetch(`${apiBase}/api/auth/verify`, {
+          headers,
+        });
+        
+        if (response.status === 401) {
+          handleLogout();
+          setAuthLoading(false);
+          return;
+        }
+        
+        if (response.ok) {
+          const data = await response.json();
+          setUser(data.user);
+          setIsAuthenticated(true);
+          // Jika admin, langsung set ke admin page
+          if (data.user.role === 'admin') {
+            setIsAdminPage(true);
+          }
+          // Fetch settings setelah login
+          setTimeout(() => {
+            fetchSettings();
+          }, 100);
+        } else {
+          handleLogout();
+        }
+      } catch (error) {
+        console.error("Token verification failed:", error);
+        handleLogout();
+      } finally {
+        setAuthLoading(false);
+      }
+    };
+
+    verifyToken();
+  }, [token, fetchSettings]);
+
   const fetchEntries = useCallback(async (silent = false) => {
+    if (!token || !isAuthenticated) return;
+    
     if (!silent) {
       setLoading(true);
     }
@@ -106,7 +564,7 @@ function App() {
         console.log('🔗 Fetching from:', apiUrl);
       }
       
-      const response = await fetch(apiUrl);
+      const response = await authenticatedFetch(apiUrl);
       
       // Check if response is HTML (error case)
       const contentType = response.headers.get('content-type');
@@ -137,14 +595,26 @@ function App() {
         setLoading(false);
       }
     }
-  }, []);
+  }, [token, isAuthenticated]);
 
   useEffect(() => {
-    fetchEntries();
-  }, [fetchEntries]);
+    if (isAuthenticated) {
+      fetchEntries();
+    }
+  }, [fetchEntries, isAuthenticated]);
+
+  useEffect(() => {
+    if (isAuthenticated && token) {
+      fetchSettings();
+    }
+  }, [isAuthenticated, token, fetchSettings]);
 
   // WebSocket untuk realtime update (menggantikan polling)
   useEffect(() => {
+    if (!isAuthenticated || !token) {
+      return;
+    }
+
     // Tentukan URL WebSocket server
     const getSocketUrl = () => {
       // Gunakan environment variable jika tersedia
@@ -167,7 +637,7 @@ function App() {
       console.log('🔌 Connecting to WebSocket:', socketUrl);
     }
 
-    // Connect ke WebSocket server
+    // Connect ke WebSocket server dengan authentication
     // Di production, force polling saja karena Netlify/Railway tidak support WebSocket dengan baik
     // Di development, biarkan Socket.IO coba WebSocket dulu
     const isProduction = !import.meta.env.DEV;
@@ -183,6 +653,9 @@ function App() {
       reconnectionAttempts: Infinity, // Retry terus menerus
       timeout: 20000,
       forceNew: false,
+      auth: {
+        token: token,
+      },
     });
 
     // Event listeners untuk debugging dan monitoring
@@ -256,7 +729,7 @@ function App() {
     return () => {
       socket.disconnect();
     };
-  }, []);
+  }, [isAuthenticated, token]);
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -375,16 +848,24 @@ const runningEntries = useMemo(() => {
         return;
       }
       setPendingPayload(payload);
-      setIsPinStep(true);
-      setPin("");
-      setPinError("");
-      setPinMode(isEditing ? "edit" : "create");
-      setTimeout(() => {
-        modalRef.current
-          ?.querySelector("input[name='pin']")
-          ?.focus();
-      }, 0);
-      return;
+      
+      // Check if PIN is enabled
+      if (settings.pinEnabled) {
+        setIsPinStep(true);
+        setPin("");
+        setPinError("");
+        setPinMode(isEditing ? "edit" : "create");
+        setTimeout(() => {
+          modalRef.current
+            ?.querySelector("input[name='pin']")
+            ?.focus();
+        }, 0);
+        return;
+      } else {
+        // PIN not enabled, proceed directly
+        setPinMode(isEditing ? "edit" : "create");
+        // Continue to submit without PIN
+      }
     }
 
     const finalPayload = pendingPayload ?? payload;
@@ -420,18 +901,21 @@ const runningEntries = useMemo(() => {
 
     setSubmitting(true);
     try {
-      if (!validatePin()) {
-        setSubmitting(false);
-        return;
+      // Check if PIN is required
+      if (settings.pinEnabled) {
+        const isValid = await validatePin();
+        if (!isValid) {
+          setSubmitting(false);
+          return;
+        }
       }
 
       if (pinMode === "edit" && editingTarget) {
       const apiBase = getApiUrl();
-      const response = await fetch(
+      const response = await authenticatedFetch(
         `${apiBase}/api/transactions/${editingTarget}`,
           {
             method: "PUT",
-            headers: { "Content-Type": "application/json" },
             body: JSON.stringify(normalizedPayload),
           }
         );
@@ -447,9 +931,8 @@ const runningEntries = useMemo(() => {
       }
 
       const apiBase = getApiUrl();
-      const response = await fetch(`${apiBase}/api/transactions`, {
+      const response = await authenticatedFetch(`${apiBase}/api/transactions`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(normalizedPayload),
       });
       if (!response.ok) {
@@ -474,7 +957,7 @@ const runningEntries = useMemo(() => {
     setDeleting(true);
     try {
       const apiBase = getApiUrl();
-      const response = await fetch(`${apiBase}/api/transactions/${deleteTarget}`, {
+      const response = await authenticatedFetch(`${apiBase}/api/transactions/${deleteTarget}`, {
         method: "DELETE",
       });
       if (!response.ok && response.status !== 204) {
@@ -496,7 +979,7 @@ const runningEntries = useMemo(() => {
     setResetting(true);
     try {
       const apiBase = getApiUrl();
-      const response = await fetch(`${apiBase}/api/transactions`, { method: "DELETE" });
+      const response = await authenticatedFetch(`${apiBase}/api/transactions`, { method: "DELETE" });
       if (!response.ok && response.status !== 204) {
         const body = await safeJson(response);
         throw new Error(body.message || "Gagal menghapus data.");
@@ -513,19 +996,28 @@ const runningEntries = useMemo(() => {
   };
 
   const confirmDeleteWithPin = async () => {
-    if (!validatePin()) return;
+    if (settings.pinEnabled) {
+      const isValid = await validatePin();
+      if (!isValid) return;
+    }
     await requestDelete();
     resetPinFlow();
   };
 
   const confirmResetWithPin = async () => {
-    if (!validatePin()) return;
+    if (settings.pinEnabled) {
+      const isValid = await validatePin();
+      if (!isValid) return;
+    }
     await handleReset();
     resetPinFlow();
   };
 
-  const confirmExportWithPin = () => {
-    if (!validatePin()) return;
+  const confirmExportWithPin = async () => {
+    if (settings.pinEnabled) {
+      const isValid = await validatePin();
+      if (!isValid) return;
+    }
     const rows = runningEntries.map((entry) => ({
       Tanggal: formatDate(entry.date),
       Uraian: entry.description,
@@ -569,16 +1061,345 @@ const runningEntries = useMemo(() => {
     setPinMode(null);
   };
 
+  const closeImportPinModal = () => {
+    setIsImportPinOpen(false);
+    setPin("");
+    setPinError("");
+    setPinMode(null);
+  };
+
+  const closeImportFileModal = () => {
+    setIsImportFileOpen(false);
+    setImportFile(null);
+    setImportPreview([]);
+  };
+
+  // Helper untuk parse tanggal dari format Excel (DD MMM YYYY) ke YYYY-MM-DD
+  const parseExcelDate = (dateStr) => {
+    if (!dateStr) return null;
+    
+    // Jika sudah dalam format YYYY-MM-DD, return langsung
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      return dateStr;
+    }
+
+    // Parse format "DD MMM YYYY" (contoh: "15 Des 2024")
+    const months = {
+      'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04',
+      'mei': '05', 'jun': '06', 'jul': '07', 'agu': '08',
+      'sep': '09', 'okt': '10', 'nov': '11', 'des': '12',
+      'januari': '01', 'februari': '02', 'maret': '03', 'april': '04',
+      'mei': '05', 'juni': '06', 'juli': '07', 'agustus': '08',
+      'september': '09', 'oktober': '10', 'november': '11', 'desember': '12'
+    };
+
+    // Coba parse berbagai format
+    const dateMatch = dateStr.toString().trim().toLowerCase().match(/(\d{1,2})\s+(\w+)\s+(\d{4})/);
+    if (dateMatch) {
+      const day = dateMatch[1].padStart(2, '0');
+      const month = months[dateMatch[2]];
+      const year = dateMatch[3];
+      if (month) {
+        return `${year}-${month}-${day}`;
+      }
+    }
+
+    // Fallback: coba parse sebagai Date object (untuk format Excel number)
+    const date = new Date(dateStr);
+    if (!isNaN(date.getTime())) {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+
+    return null;
+  };
+
+  // Parse Excel file dan convert ke format transaksi
+  const parseExcelFile = async (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = new Uint8Array(e.target.result);
+          const workbook = readXLSX(data, { type: 'array' });
+          const sheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[sheetName];
+          const jsonData = XLSXUtils.sheet_to_json(worksheet, { header: 1 });
+
+          // Skip header row (baris pertama)
+          const rows = jsonData.slice(1);
+          const transactions = [];
+
+          for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            if (!row || row.length < 5) continue; // Skip baris kosong atau tidak lengkap
+
+            const [tanggal, uraian, pemasukan, pengeluaran, saldo] = row;
+
+            // Skip jika uraian kosong
+            if (!uraian || !uraian.toString().trim()) continue;
+
+            // Parse tanggal
+            const date = parseExcelDate(tanggal);
+            if (!date) {
+              console.warn(`Baris ${i + 2}: Tanggal tidak valid: ${tanggal}`);
+              continue;
+            }
+
+            // Parse jumlah
+            const pemasukanNum = Number(pemasukan) || 0;
+            const pengeluaranNum = Number(pengeluaran) || 0;
+
+            // Tentukan type berdasarkan mana yang lebih besar dari 0
+            let type, amount;
+            if (pemasukanNum > 0 && pengeluaranNum === 0) {
+              type = "income";
+              amount = pemasukanNum;
+            } else if (pengeluaranNum > 0 && pemasukanNum === 0) {
+              type = "expense";
+              amount = pengeluaranNum;
+            } else if (pemasukanNum > pengeluaranNum) {
+              type = "income";
+              amount = pemasukanNum;
+            } else if (pengeluaranNum > pemasukanNum) {
+              type = "expense";
+              amount = pengeluaranNum;
+            } else {
+              // Jika keduanya 0 atau sama, skip
+              continue;
+            }
+
+            transactions.push({
+              description: uraian.toString().trim(),
+              amount: amount,
+              type: type,
+              date: date,
+            });
+          }
+
+          resolve(transactions);
+        } catch (error) {
+          reject(new Error(`Gagal membaca file Excel: ${error.message}`));
+        }
+      };
+      reader.onerror = () => reject(new Error("Gagal membaca file."));
+      reader.readAsArrayBuffer(file);
+    });
+  };
+
+  // Handle file upload
+  const handleFileUpload = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    // Validasi file type
+    if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) {
+      setToast({ type: "error", message: "File harus berformat Excel (.xlsx atau .xls)" });
+      return;
+    }
+
+    setImportFile(file);
+    setImporting(true);
+
+    try {
+      const transactions = await parseExcelFile(file);
+      if (transactions.length === 0) {
+        setToast({ type: "error", message: "Tidak ada transaksi valid yang ditemukan di file Excel." });
+        setImportFile(null);
+        setImporting(false);
+        return;
+      }
+
+      setImportPreview(transactions);
+      setIsImportFileOpen(false);
+      setPinMode("import");
+      setPin("");
+      setPinError("");
+      setIsImportPinOpen(true);
+    } catch (error) {
+      console.error(error);
+      setToast({ type: "error", message: error.message });
+      setImportFile(null);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  // Import batch transaksi ke API
+  const importTransactions = async (transactions) => {
+    const apiBase = getApiUrl();
+    const results = {
+      success: 0,
+      failed: 0,
+      errors: [],
+    };
+
+    // Import satu per satu untuk memastikan semua berhasil
+    for (let i = 0; i < transactions.length; i++) {
+      const transaction = transactions[i];
+      try {
+        const response = await authenticatedFetch(`${apiBase}/api/transactions`, {
+          method: "POST",
+          body: JSON.stringify(transaction),
+        });
+
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(body.message || `Gagal menyimpan transaksi ke-${i + 1}`);
+        }
+
+        results.success++;
+      } catch (error) {
+        results.failed++;
+        results.errors.push({
+          index: i + 1,
+          description: transaction.description,
+          error: error.message,
+        });
+      }
+    }
+
+    return results;
+  };
+
+  // Confirm import dengan PIN
+  const confirmImportWithPin = async () => {
+    if (settings.pinEnabled) {
+      const isValid = await validatePin();
+      if (!isValid) return;
+    }
+
+    if (!importPreview || importPreview.length === 0) {
+      setToast({ type: "error", message: "Tidak ada data untuk diimpor." });
+      return;
+    }
+
+    setImporting(true);
+    try {
+      const results = await importTransactions(importPreview);
+
+      if (results.failed === 0) {
+        setToast({
+          type: "success",
+          message: `Berhasil mengimpor ${results.success} transaksi.`,
+        });
+      } else {
+        setToast({
+          type: "warning",
+          message: `Berhasil: ${results.success}, Gagal: ${results.failed}. Cek console untuk detail.`,
+        });
+        console.error("Error import:", results.errors);
+      }
+
+      // Reset state
+      closeImportPinModal();
+      closeImportFileModal();
+      fetchEntries();
+    } catch (error) {
+      console.error(error);
+      setToast({ type: "error", message: error.message });
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleImportExcel = () => {
+    setIsImportFileOpen(true);
+  };
+
+  // Update profile
+  const handleUpdateProfile = async (e) => {
+    e.preventDefault();
+    setSettingsLoading(true);
+    setSettingsError("");
+
+    try {
+      const apiBase = getApiUrl();
+      const response = await authenticatedFetch(`${apiBase}/api/user/profile`, {
+        method: "PUT",
+        body: JSON.stringify({
+          name: settingsForm.name,
+          email: settingsForm.email,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message || "Gagal memperbarui profile.");
+      }
+
+      setUser({ ...user, name: data.name, email: data.email });
+      setSettings({ ...settings, name: data.name, email: data.email });
+      setToast({ type: "success", message: "Profile berhasil diperbarui." });
+    } catch (error) {
+      console.error(error);
+      setSettingsError(error.message);
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
+  // Update PIN settings
+  const handleUpdatePin = async (e) => {
+    e.preventDefault();
+    setSettingsLoading(true);
+    setSettingsError("");
+
+    // Validate PIN if enabled
+    if (settingsForm.pinEnabled && settingsForm.pin) {
+      if (settingsForm.pin.length !== 4 || !/^\d{4}$/.test(settingsForm.pin)) {
+        setSettingsError("PIN harus berupa 4 digit angka.");
+        setSettingsLoading(false);
+        return;
+      }
+    }
+
+    try {
+      const apiBase = getApiUrl();
+      const response = await authenticatedFetch(`${apiBase}/api/user/pin`, {
+        method: "PUT",
+        body: JSON.stringify({
+          pin: settingsForm.pinEnabled ? settingsForm.pin : null,
+          pinEnabled: settingsForm.pinEnabled,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message || "Gagal memperbarui PIN.");
+      }
+
+      setSettings({ ...settings, pinEnabled: data.pinEnabled });
+      setSettingsForm({ ...settingsForm, pin: "" });
+      setToast({ type: "success", message: data.message || "Pengaturan PIN berhasil diperbarui." });
+    } catch (error) {
+      console.error(error);
+      setSettingsError(error.message);
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
   const handleDownloadExcel = () => {
     if (!runningEntries.length) {
       setToast({ type: "error", message: "Belum ada transaksi untuk diunduh." });
       return;
     }
 
-    setPinMode("export");
-    setPin("");
-    setPinError("");
-    setIsExportPinOpen(true);
+    // Check if PIN is enabled
+    if (settings.pinEnabled) {
+      setPinMode("export");
+      setPin("");
+      setPinError("");
+      setIsExportPinOpen(true);
+    } else {
+      // PIN not enabled, proceed directly
+      confirmExportWithPin();
+    }
   };
 
   const openModal = (entry = null) => {
@@ -625,6 +1446,7 @@ const runningEntries = useMemo(() => {
         setIsModalOpen(false);
         setIsConfirmOpen(false);
         setIsDeleteConfirmOpen(false);
+        setIsMenuOpen(false);
       }
     };
     window.addEventListener("keydown", handleKey);
@@ -635,6 +1457,22 @@ const runningEntries = useMemo(() => {
       document.body.style.overflow = "";
     };
   }, [isModalOpen, isConfirmOpen, isDeleteConfirmOpen]);
+
+  // Close menu when clicking outside
+  useEffect(() => {
+    if (!isMenuOpen) return;
+
+    const handleClickOutside = (event) => {
+      if (!event.target.closest('.relative')) {
+        setIsMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [isMenuOpen]);
 
   const modalTitle = !isPinStep
     ? editingTarget
@@ -652,6 +1490,197 @@ const runningEntries = useMemo(() => {
       : "Nilai saldo akan diperbarui otomatis setiap transaksi tersimpan."
     : "";
 
+  // Show loading screen while checking authentication
+  if (authLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50">
+        <div className="text-center">
+          <div className="mb-4 text-4xl">⏳</div>
+          <p className="text-sm font-semibold text-slate-600">Memuat...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show login/register screen if not authenticated
+  if (!isAuthenticated) {
+    return (
+      <>
+        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-indigo-900 to-slate-800 flex items-center justify-center px-4">
+          {toast && (
+            <div
+              className={`fixed right-6 top-6 z-50 rounded-2xl px-4 py-3 text-white shadow-2xl transition-all ${
+                toast.type === "error"
+                  ? "bg-rose-500/90"
+                  : "bg-emerald-500/90"
+              }`}
+            >
+              <p className="text-sm font-semibold">{toast.message}</p>
+            </div>
+          )}
+
+          <div className="w-full max-w-md">
+            <div className="mb-8 text-center text-white">
+              <h1 className="text-4xl font-bold mb-2">Prava Cash</h1>
+              <p className="text-indigo-200">Cashflow Management Dashboard</p>
+            </div>
+
+            {/* Login Modal */}
+            {isLoginModalOpen && (
+              <div className="rounded-3xl bg-white p-8 shadow-2xl">
+                <h2 className="mb-6 text-2xl font-semibold text-slate-900">Login</h2>
+                <form onSubmit={handleLogin} className="space-y-4">
+                  <div>
+                    <label className="mb-2 block text-sm font-semibold text-slate-700">
+                      Email
+                    </label>
+                    <input
+                      type="email"
+                      value={loginForm.email}
+                      onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })}
+                      className={inputClasses}
+                      placeholder="nama@email.com"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-2 block text-sm font-semibold text-slate-700">
+                      Password
+                    </label>
+                    <input
+                      type="password"
+                      value={loginForm.password}
+                      onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
+                      className={inputClasses}
+                      placeholder="••••••"
+                      required
+                    />
+                  </div>
+                  {authError && (
+                    <p className="text-sm font-semibold text-rose-500">{authError}</p>
+                  )}
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsLoginModalOpen(false);
+                        setIsRegisterModalOpen(true);
+                        setAuthError("");
+                      }}
+                      className="flex-1 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+                    >
+                      Daftar
+                    </button>
+                    <button
+                      type="submit"
+                      className="flex-1 rounded-2xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-indigo-700"
+                    >
+                      Login
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            {/* Register Modal */}
+            {isRegisterModalOpen && (
+              <div className="rounded-3xl bg-white p-8 shadow-2xl">
+                <h2 className="mb-6 text-2xl font-semibold text-slate-900">Daftar</h2>
+                <form onSubmit={handleRegister} className="space-y-4">
+                  <div>
+                    <label className="mb-2 block text-sm font-semibold text-slate-700">
+                      Nama
+                    </label>
+                    <input
+                      type="text"
+                      value={registerForm.name}
+                      onChange={(e) => setRegisterForm({ ...registerForm, name: e.target.value })}
+                      className={inputClasses}
+                      placeholder="Nama Lengkap"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-2 block text-sm font-semibold text-slate-700">
+                      Email
+                    </label>
+                    <input
+                      type="email"
+                      value={registerForm.email}
+                      onChange={(e) => setRegisterForm({ ...registerForm, email: e.target.value })}
+                      className={inputClasses}
+                      placeholder="nama@email.com"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-2 block text-sm font-semibold text-slate-700">
+                      Password
+                    </label>
+                    <input
+                      type="password"
+                      value={registerForm.password}
+                      onChange={(e) => setRegisterForm({ ...registerForm, password: e.target.value })}
+                      className={inputClasses}
+                      placeholder="Minimal 6 karakter"
+                      required
+                      minLength={6}
+                    />
+                  </div>
+                  {authError && (
+                    <p className="text-sm font-semibold text-rose-500">{authError}</p>
+                  )}
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsRegisterModalOpen(false);
+                        setIsLoginModalOpen(true);
+                        setAuthError("");
+                      }}
+                      className="flex-1 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+                    >
+                      Login
+                    </button>
+                    <button
+                      type="submit"
+                      className="flex-1 rounded-2xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-indigo-700"
+                    >
+                      Daftar
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            {/* Default: Show login button */}
+            {!isLoginModalOpen && !isRegisterModalOpen && (
+              <div className="rounded-3xl bg-white p-8 shadow-2xl text-center">
+                <p className="mb-6 text-slate-600">Silakan login untuk melanjutkan</p>
+                <button
+                  onClick={() => setIsLoginModalOpen(true)}
+                  className="w-full rounded-2xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-indigo-700"
+                >
+                  Login
+                </button>
+                <p className="mt-4 text-sm text-slate-500">
+                  Belum punya akun?{" "}
+                  <button
+                    onClick={() => setIsRegisterModalOpen(true)}
+                    className="font-semibold text-indigo-600 hover:text-indigo-700"
+                  >
+                    Daftar di sini
+                  </button>
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  // Show dashboard if authenticated
   return (
     <>
     <div className="min-h-screen bg-slate-50 pb-4">
@@ -674,6 +1703,11 @@ const runningEntries = useMemo(() => {
               <p className="text-xs uppercase tracking-[0.4em] text-indigo-200">
                 Prava Cash
               </p>
+              {user && (
+                <p className="mt-1 text-sm font-medium text-white/80">
+                  Halo, {user.name}
+                </p>
+              )}
             </div>
             <div className="text-center sm:text-right">
               <p className="text-sm font-medium text-white/90">
@@ -694,37 +1728,381 @@ const runningEntries = useMemo(() => {
               </p>
             </div>
           </div>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex flex-col gap-3 sm:flex-row sm:flex-1">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            {/* Mobile: Side-by-side buttons, Desktop: Full width primary button */}
+            {user?.role !== 'admin' && (
+            <div className="flex w-full gap-2 sm:w-auto sm:flex-1">
+              {/* Primary Button */}
               <button
                 type="button"
                 onClick={openModal}
-                className="inline-flex items-center justify-center rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-slate-900 shadow-soft transition hover:bg-slate-100"
+                className="inline-flex flex-1 items-center justify-center rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-slate-900 shadow-soft transition hover:bg-slate-100 sm:flex-initial"
               >
                 + Tambah Transaksi
               </button>
-                <div className="flex flex-row gap-3 sm:flex-grow-0">
-                  <button
-                    type="button"
-                    onClick={() => setIsConfirmOpen(true)}
-                    className="inline-flex flex-1 items-center justify-center rounded-2xl border border-white/30 px-4 py-3 text-sm font-semibold text-white transition hover:bg-white/10 sm:flex-initial sm:px-6"
+              
+              {/* Mobile: Menu Button - Side by side with primary button */}
+              <div className="relative sm:hidden">
+                <button
+                  type="button"
+                  onClick={() => setIsMenuOpen(!isMenuOpen)}
+                  className="inline-flex items-center justify-center rounded-2xl border border-white/30 px-4 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
+                  aria-label="Menu"
+                >
+                  <span className="mr-2">Menu</span>
+                  <svg
+                    className={`h-4 w-4 transition-transform ${isMenuOpen ? "rotate-180" : ""}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
                   >
-                    Bersihkan Data
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleDownloadExcel}
-                    className="inline-flex flex-1 items-center justify-center rounded-2xl border border-white/30 px-4 py-3 text-sm font-semibold text-white transition hover:bg-white/10 sm:flex-initial sm:px-6"
-                  >
-                    Download Excel
-                  </button>
-                </div>
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M19 9l-7 7-7-7"
+                    />
+                  </svg>
+                </button>
+
+                {/* Dropdown Menu */}
+                {isMenuOpen && (
+                  <>
+                    {/* Backdrop */}
+                    <div
+                      className="fixed inset-0 z-10"
+                      onClick={() => setIsMenuOpen(false)}
+                    />
+                    {/* Menu Items */}
+                    <div className="absolute right-0 top-full z-20 mt-2 w-48 rounded-2xl border border-white/20 bg-slate-800 shadow-2xl">
+                      <div className="py-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsSettingsOpen(true);
+                            fetchSettings();
+                            setIsMenuOpen(false);
+                          }}
+                          className="w-full px-4 py-3 text-left text-sm font-semibold text-white transition hover:bg-white/10"
+                        >
+                          Settings
+                        </button>
+                        <div className="my-1 border-t border-white/20" />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsConfirmOpen(true);
+                            setIsMenuOpen(false);
+                          }}
+                          className="w-full px-4 py-3 text-left text-sm font-semibold text-white transition hover:bg-white/10"
+                        >
+                          Bersihkan Data
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleImportExcel();
+                            setIsMenuOpen(false);
+                          }}
+                          className="w-full px-4 py-3 text-left text-sm font-semibold text-white transition hover:bg-white/10"
+                        >
+                          Import Excel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleDownloadExcel();
+                            setIsMenuOpen(false);
+                          }}
+                          className="w-full px-4 py-3 text-left text-sm font-semibold text-white transition hover:bg-white/10"
+                        >
+                          Download Excel
+                        </button>
+                        <div className="my-1 border-t border-white/20" />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleLogout();
+                            setIsMenuOpen(false);
+                          }}
+                          className="w-full px-4 py-3 text-left text-sm font-semibold text-rose-400 transition hover:bg-white/10"
+                        >
+                          Logout
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+            )}
+            
+            {/* Desktop: Secondary Actions - Horizontal */}
+            <div className="hidden items-center gap-2 sm:flex">
+              {user?.role !== 'admin' && (
+                <>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSettingsOpen(true);
+                  fetchSettings();
+                }}
+                className="inline-flex items-center justify-center rounded-2xl border border-white/30 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-white/10 sm:px-4"
+              >
+                Settings
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsConfirmOpen(true)}
+                className="inline-flex items-center justify-center rounded-2xl border border-white/30 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-white/10 sm:px-4"
+              >
+                Bersihkan Data
+              </button>
+              <button
+                type="button"
+                onClick={handleImportExcel}
+                className="inline-flex items-center justify-center rounded-2xl border border-white/30 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-white/10 sm:px-4"
+              >
+                Import Excel
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadExcel}
+                className="inline-flex items-center justify-center rounded-2xl border border-white/30 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-white/10 sm:px-4"
+              >
+                Download Excel
+              </button>
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="inline-flex items-center justify-center rounded-2xl border border-white/30 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-white/10 sm:px-4"
+              >
+                Logout
+              </button>
+              </>
+              )}
+              {user?.role === 'admin' && (
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="inline-flex items-center justify-center rounded-2xl border border-white/30 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-white/10 sm:px-4"
+                >
+                  Logout
+                </button>
+              )}
             </div>
           </div>
         </header>
 
-        <section className="relative pb-2 sm:grid sm:grid-cols-3 sm:gap-6">
-          <div className="relative overflow-hidden sm:col-span-3 sm:grid sm:grid-cols-3 sm:gap-6 sm:overflow-visible">
+        {/* Admin Page - Auto show if user is admin */}
+        {user?.role === 'admin' && (
+          <div className="space-y-6">
+            {/* Admin Tabs */}
+            <div className="flex gap-2 rounded-2xl bg-white p-2 shadow-soft">
+              <button
+                type="button"
+                onClick={() => setAdminTab("dashboard")}
+                className={`flex-1 rounded-xl px-4 py-3 text-sm font-semibold transition ${
+                  adminTab === "dashboard"
+                    ? "bg-indigo-600 text-white"
+                    : "text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                Dashboard
+              </button>
+              <button
+                type="button"
+                onClick={() => setAdminTab("users")}
+                className={`flex-1 rounded-xl px-4 py-3 text-sm font-semibold transition ${
+                  adminTab === "users"
+                    ? "bg-indigo-600 text-white"
+                    : "text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                Users ({adminUsers.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setAdminTab("transactions")}
+                className={`flex-1 rounded-xl px-4 py-3 text-sm font-semibold transition ${
+                  adminTab === "transactions"
+                    ? "bg-indigo-600 text-white"
+                    : "text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                Transactions ({adminTransactions.length})
+              </button>
+            </div>
+
+            {/* Admin Dashboard Tab */}
+            {adminTab === "dashboard" && adminStats && (
+              <div className="space-y-6">
+                <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+                  <StatCard
+                    label="Total Users"
+                    value={adminStats.totalUsers}
+                    className="from-purple-500 via-purple-400 to-purple-500 text-white"
+                  />
+                  <StatCard
+                    label="Total Transactions"
+                    value={adminStats.totalTransactions}
+                    className="from-blue-500 via-blue-400 to-blue-500 text-white"
+                  />
+                  <StatCard
+                    label="Total Income"
+                    value={formatCurrency(adminStats.totalIncome)}
+                    className={STAT_STYLES.income}
+                  />
+                  <StatCard
+                    label="Total Expense"
+                    value={formatCurrency(adminStats.totalExpense)}
+                    className={STAT_STYLES.expense}
+                  />
+                </div>
+                <div className="rounded-2xl bg-white p-6 shadow-soft">
+                  <h3 className="mb-4 text-lg font-semibold text-slate-900">Balance</h3>
+                  <p className="text-3xl font-semibold text-slate-900">
+                    {formatCurrency(adminStats.balance)}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Admin Users Tab */}
+            {adminTab === "users" && (
+              <div className="rounded-2xl bg-white shadow-soft">
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-slate-100">
+                    <thead className="bg-slate-50">
+                      <tr>
+                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Name
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Email
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Role
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Transactions
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Created
+                        </th>
+                        <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Actions
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {adminUsers.map((u) => (
+                        <tr key={u.id}>
+                          <td className="px-4 py-3 text-sm font-semibold text-slate-900">
+                            {u.name}
+                          </td>
+                          <td className="px-4 py-3 text-sm text-slate-600">{u.email}</td>
+                          <td className="px-4 py-3">
+                            <span
+                              className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${
+                                u.role === "admin"
+                                  ? "bg-purple-100 text-purple-700"
+                                  : "bg-slate-100 text-slate-700"
+                              }`}
+                            >
+                              {u.role || "user"}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-sm text-slate-600">
+                            {u.transaction_count || 0}
+                          </td>
+                          <td className="px-4 py-3 text-sm text-slate-500">
+                            {new Date(u.created_at).toLocaleDateString("id-ID")}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex justify-center gap-2">
+                              <button
+                                onClick={() => handleEditUser(u)}
+                                className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-600 transition hover:bg-indigo-100"
+                              >
+                                Edit
+                              </button>
+                              {u.id !== user.id && (
+                                <button
+                                  onClick={() => handleDeleteUser(u.id)}
+                                  className="rounded-full bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-600 transition hover:bg-rose-100"
+                                >
+                                  Delete
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Admin Transactions Tab */}
+            {adminTab === "transactions" && (
+              <div className="rounded-2xl bg-white shadow-soft">
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-slate-100">
+                    <thead className="bg-slate-50">
+                      <tr>
+                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Date
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          User
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Description
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Type
+                        </th>
+                        <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Amount
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {adminTransactions.map((t) => (
+                        <tr key={t.id}>
+                          <td className="px-4 py-3 text-sm text-slate-600">
+                            {formatDate(t.date)}
+                          </td>
+                          <td className="px-4 py-3 text-sm font-semibold text-slate-900">
+                            {t.user_name}
+                          </td>
+                          <td className="px-4 py-3 text-sm text-slate-600">{t.description}</td>
+                          <td className="px-4 py-3">
+                            <Badge
+                              label={t.type}
+                              variant={t.type}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-right text-sm font-semibold text-slate-900">
+                            {formatCurrency(t.amount)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Normal Dashboard - Only for non-admin users */}
+        {user?.role !== 'admin' && (
+          <>
+            <section className="relative pb-2 sm:grid sm:grid-cols-3 sm:gap-6">
+              <div className="relative overflow-hidden sm:col-span-3 sm:grid sm:grid-cols-3 sm:gap-6 sm:overflow-visible">
             <div
               className="flex transition-transform duration-300 ease-in-out sm:contents"
               style={{
@@ -753,10 +2131,10 @@ const runningEntries = useMemo(() => {
                 />
               </div>
             </div>
-          </div>
-          
-          {/* Carousel Dots Indicator - hanya tampil di mobile */}
-          <div className="mt-4 flex justify-center gap-2 sm:hidden">
+              </div>
+              
+              {/* Carousel Dots Indicator - hanya tampil di mobile */}
+              <div className="mt-4 flex justify-center gap-2 sm:hidden">
             {[0, 1, 2].map((index) => (
               <button
                 key={index}
@@ -770,10 +2148,10 @@ const runningEntries = useMemo(() => {
                 aria-label={`Go to slide ${index + 1}`}
               />
             ))}
-          </div>
-        </section>
+              </div>
+            </section>
 
-        <section className="grid gap-6">
+            <section className="grid gap-6">
           <div className="rounded-3xl bg-white p-6 shadow-soft">
             <div className="flex flex-col gap-2 pb-4 sm:flex-row sm:items-end sm:justify-between">
               <div>
@@ -920,6 +2298,9 @@ const runningEntries = useMemo(() => {
             )}
           </div>
         </section>
+          </>
+        )}
+
       </div>
 
       {isModalOpen && (
@@ -1006,7 +2387,7 @@ const runningEntries = useMemo(() => {
                     />
                   </Field>
                 </>
-              ) : (
+              ) : settings.pinEnabled ? (
                 <div className="space-y-3">
                   <p className="text-center text-sm text-slate-500">
                     {pinDescriptions[pinMode ?? "create"]}
@@ -1033,6 +2414,12 @@ const runningEntries = useMemo(() => {
                     </p>
                   )}
                 </div>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-center text-sm text-slate-500">
+                    Konfirmasi untuk melanjutkan.
+                  </p>
+                </div>
               )}
 
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1050,7 +2437,7 @@ const runningEntries = useMemo(() => {
                     disabled={resetting}
                     className="inline-flex w-full items-center justify-center rounded-2xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:bg-rose-300 sm:w-auto sm:flex-1"
                   >
-                    {resetting ? "Menghapus..." : "Konfirmasi PIN"}
+                    {resetting ? "Menghapus..." : settings.pinEnabled ? "Konfirmasi PIN" : "Konfirmasi"}
                   </button>
                 ) : isPinStep && pinMode === "delete" ? (
                   <button
@@ -1059,7 +2446,7 @@ const runningEntries = useMemo(() => {
                     disabled={deleting}
                     className="inline-flex w-full items-center justify-center rounded-2xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:bg-rose-300 sm:w-auto sm:flex-1"
                   >
-                    {deleting ? "Menghapus..." : "Konfirmasi PIN"}
+                    {deleting ? "Menghapus..." : settings.pinEnabled ? "Konfirmasi PIN" : "Konfirmasi"}
                   </button>
                 ) : isPinStep && pinMode === "export" ? (
                   <button
@@ -1067,7 +2454,7 @@ const runningEntries = useMemo(() => {
                     onClick={confirmExportWithPin}
                     className="inline-flex w-full items-center justify-center rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300 sm:w-auto sm:flex-1"
                   >
-                    Konfirmasi PIN
+                    {settings.pinEnabled ? "Konfirmasi PIN" : "Konfirmasi"}
                   </button>
                 ) : (
                   <button
@@ -1078,7 +2465,9 @@ const runningEntries = useMemo(() => {
                     {submitting
                       ? "Memproses..."
                       : isPinStep
-                      ? "Konfirmasi PIN"
+                      ? settings.pinEnabled
+                        ? "Konfirmasi PIN"
+                        : "Konfirmasi"
                       : editingTarget
                       ? "Simpan Perubahan"
                       : "Lanjutkan"}
@@ -1114,17 +2503,22 @@ const runningEntries = useMemo(() => {
               <button
                 type="button"
                 onClick={() => {
-                  setPinMode("reset");
-                  setPin("");
-                  setPinError("");
-                  setIsPinStep(true);
-                  setIsConfirmOpen(false);
-                  setIsModalOpen(true);
-                  setTimeout(() => {
-                    modalRef.current
-                      ?.querySelector("input[name='pin']")
-                      ?.focus();
-                  }, 0);
+                  if (settings.pinEnabled) {
+                    setPinMode("reset");
+                    setPin("");
+                    setPinError("");
+                    setIsPinStep(true);
+                    setIsConfirmOpen(false);
+                    setIsModalOpen(true);
+                    setTimeout(() => {
+                      modalRef.current
+                        ?.querySelector("input[name='pin']")
+                        ?.focus();
+                    }, 0);
+                  } else {
+                    setIsConfirmOpen(false);
+                    handleReset();
+                  }
                 }}
                 className="inline-flex items-center justify-center rounded-2xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-rose-700"
               >
@@ -1162,16 +2556,20 @@ const runningEntries = useMemo(() => {
                 type="button"
                 onClick={() => {
                   setIsDeleteConfirmOpen(false);
-                  setPinMode("delete");
-                  setPin("");
-                  setPinError("");
-                  setIsPinStep(true);
-                  setIsModalOpen(true);
-                  setTimeout(() => {
-                    modalRef.current
-                      ?.querySelector("input[name='pin']")
-                      ?.focus();
-                  }, 0);
+                  if (settings.pinEnabled) {
+                    setPinMode("delete");
+                    setPin("");
+                    setPinError("");
+                    setIsPinStep(true);
+                    setIsModalOpen(true);
+                    setTimeout(() => {
+                      modalRef.current
+                        ?.querySelector("input[name='pin']")
+                        ?.focus();
+                    }, 0);
+                  } else {
+                    requestDelete();
+                  }
                 }}
                 className="inline-flex items-center justify-center rounded-2xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-rose-700"
               >
@@ -1232,6 +2630,375 @@ const runningEntries = useMemo(() => {
               >
                 Konfirmasi PIN
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isImportFileOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/70 px-4">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 text-center shadow-2xl sm:p-8">
+            <p className="text-sm font-semibold uppercase tracking-wide text-indigo-500">
+              Import Excel
+            </p>
+            <h2 className="mt-2 text-2xl font-semibold text-slate-900">
+              Upload File Excel
+            </h2>
+            <p className="mt-3 text-sm text-slate-500">
+              Pilih file Excel yang akan diimpor. Format harus sesuai dengan file yang diunduh dari aplikasi ini.
+            </p>
+            <div className="mt-6 space-y-4">
+              <div className="relative">
+                <input
+                  type="file"
+                  accept=".xlsx,.xls"
+                  onChange={handleFileUpload}
+                  disabled={importing}
+                  className="hidden"
+                  id="excel-file-input"
+                />
+                <label
+                  htmlFor="excel-file-input"
+                  className={`flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed px-6 py-8 transition ${
+                    importing
+                      ? "border-slate-200 bg-slate-50 cursor-not-allowed"
+                      : "border-indigo-300 bg-indigo-50 hover:border-indigo-400 hover:bg-indigo-100"
+                  }`}
+                >
+                  {importing ? (
+                    <>
+                      <div className="mb-2 text-2xl">⏳</div>
+                      <p className="text-sm font-semibold text-slate-600">
+                        Memproses file...
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="mb-2 text-2xl">📄</div>
+                      <p className="text-sm font-semibold text-indigo-600">
+                        Klik untuk memilih file
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Format: .xlsx atau .xls
+                      </p>
+                    </>
+                  )}
+                </label>
+              </div>
+              {importFile && (
+                <div className="rounded-xl bg-slate-50 p-3 text-left">
+                  <p className="text-xs font-semibold text-slate-500">File terpilih:</p>
+                  <p className="text-sm font-medium text-slate-900">{importFile.name}</p>
+                </div>
+              )}
+            </div>
+            <div className="mt-6">
+              <button
+                type="button"
+                onClick={closeImportFileModal}
+                disabled={importing}
+                className="inline-flex w-full items-center justify-center rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
+              >
+                Batalkan
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isImportPinOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/70 px-4">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 text-center shadow-2xl sm:p-8">
+            <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+              Keamanan PIN
+            </p>
+            <h2 className="mt-2 text-2xl font-semibold text-slate-900">
+              Konfirmasi PIN
+            </h2>
+            <p className="mt-3 text-sm text-slate-500">
+              Masukkan PIN 4-digit untuk mengimpor {importPreview.length} transaksi dari Excel.
+            </p>
+            {importPreview.length > 0 && (
+              <div className="mt-4 max-h-40 overflow-y-auto rounded-xl bg-slate-50 p-3 text-left">
+                <p className="mb-2 text-xs font-semibold text-slate-500">
+                  Preview ({importPreview.length} transaksi):
+                </p>
+                <div className="space-y-1">
+                  {importPreview.slice(0, 5).map((t, idx) => (
+                    <p key={idx} className="text-xs text-slate-600">
+                      • {formatDate(t.date)} - {t.description} - {formatCurrency(t.amount)} ({t.type === "income" ? "Pemasukan" : "Pengeluaran"})
+                    </p>
+                  ))}
+                  {importPreview.length > 5 && (
+                    <p className="text-xs text-slate-400">
+                      ... dan {importPreview.length - 5} transaksi lainnya
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+            <div className="mt-4 space-y-3 text-left">
+              <Field label="PIN">
+                <input
+                  type="password"
+                  name="pin"
+                  value={pin || ""}
+                  onChange={(event) => {
+                    setPin(event.target.value.slice(0, 4));
+                    setPinError("");
+                  }}
+                  inputMode="numeric"
+                  pattern="\d{4}"
+                  maxLength={4}
+                  className={`${inputClasses} text-center tracking-[0.5em]`}
+                  placeholder="••••"
+                  autoFocus
+                />
+              </Field>
+              {pinError && (
+                <p className="text-center text-xs font-semibold text-rose-500">
+                  {pinError}
+                </p>
+              )}
+            </div>
+            <div className="mt-6 grid gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={closeImportPinModal}
+                disabled={importing}
+                className="inline-flex items-center justify-center rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
+              >
+                Batalkan
+              </button>
+              <button
+                type="button"
+                onClick={confirmImportWithPin}
+                disabled={importing}
+                className="inline-flex items-center justify-center rounded-2xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {importing ? "Mengimpor..." : "Konfirmasi PIN"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit User Modal */}
+      {isEditUserModalOpen && selectedUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 px-4">
+          <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl sm:p-8">
+            <div className="mb-6 flex items-start justify-between">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-wide text-indigo-500">
+                  Admin
+                </p>
+                <h2 className="mt-2 text-2xl font-semibold text-slate-900">
+                  Edit User
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsEditUserModalOpen(false);
+                  setSelectedUser(null);
+                }}
+                className="rounded-full bg-slate-100 p-2 text-slate-500 transition hover:bg-slate-200"
+                aria-label="Tutup"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleUpdateUser} className="space-y-4">
+              <div>
+                <label className="mb-2 block text-sm font-semibold text-slate-700">
+                  Nama
+                </label>
+                <input
+                  type="text"
+                  value={editUserForm.name}
+                  onChange={(e) => setEditUserForm({ ...editUserForm, name: e.target.value })}
+                  className={inputClasses}
+                  placeholder="Nama Lengkap"
+                  required
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-semibold text-slate-700">
+                  Email
+                </label>
+                <input
+                  type="email"
+                  value={editUserForm.email}
+                  onChange={(e) => setEditUserForm({ ...editUserForm, email: e.target.value })}
+                  className={inputClasses}
+                  placeholder="nama@email.com"
+                  required
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-semibold text-slate-700">
+                  Role
+                </label>
+                <select
+                  value={editUserForm.role}
+                  onChange={(e) => setEditUserForm({ ...editUserForm, role: e.target.value })}
+                  className={inputClasses}
+                >
+                  <option value="user">User</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsEditUserModalOpen(false);
+                    setSelectedUser(null);
+                  }}
+                  className="flex-1 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={adminLoading}
+                  className="flex-1 rounded-2xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {adminLoading ? "Menyimpan..." : "Simpan"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {isSettingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 px-4">
+          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl sm:p-8">
+            <div className="mb-6 flex items-start justify-between">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-wide text-indigo-500">
+                  Pengaturan
+                </p>
+                <h2 className="mt-2 text-2xl font-semibold text-slate-900">
+                  Profile & Keamanan
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSettingsOpen(false);
+                  setSettingsError("");
+                }}
+                className="rounded-full bg-slate-100 p-2 text-slate-500 transition hover:bg-slate-200"
+                aria-label="Tutup settings"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-6">
+              {/* Profile Section */}
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6">
+                <h3 className="mb-4 text-lg font-semibold text-slate-900">Profile</h3>
+                <form onSubmit={handleUpdateProfile} className="space-y-4">
+                  <div>
+                    <label className="mb-2 block text-sm font-semibold text-slate-700">
+                      Nama
+                    </label>
+                    <input
+                      type="text"
+                      value={settingsForm.name}
+                      onChange={(e) => setSettingsForm({ ...settingsForm, name: e.target.value })}
+                      className={inputClasses}
+                      placeholder="Nama Lengkap"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-2 block text-sm font-semibold text-slate-700">
+                      Email
+                    </label>
+                    <input
+                      type="email"
+                      value={settingsForm.email}
+                      onChange={(e) => setSettingsForm({ ...settingsForm, email: e.target.value })}
+                      className={inputClasses}
+                      placeholder="nama@email.com"
+                      required
+                    />
+                  </div>
+                  {settingsError && (
+                    <p className="text-sm font-semibold text-rose-500">{settingsError}</p>
+                  )}
+                  <button
+                    type="submit"
+                    disabled={settingsLoading}
+                    className="w-full rounded-2xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    {settingsLoading ? "Menyimpan..." : "Simpan Profile"}
+                  </button>
+                </form>
+              </div>
+
+              {/* PIN Settings Section */}
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6">
+                <h3 className="mb-4 text-lg font-semibold text-slate-900">Pengaturan PIN</h3>
+                <form onSubmit={handleUpdatePin} className="space-y-4">
+                  <div className="flex items-center justify-between rounded-xl bg-white p-4">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">Aktifkan PIN</p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        PIN diperlukan untuk operasi penting (tambah, edit, hapus, export, import)
+                      </p>
+                    </div>
+                    <label className="relative inline-flex cursor-pointer items-center">
+                      <input
+                        type="checkbox"
+                        checked={settingsForm.pinEnabled}
+                        onChange={(e) => setSettingsForm({ ...settingsForm, pinEnabled: e.target.checked, pin: "" })}
+                        className="peer sr-only"
+                      />
+                      <div className="peer h-6 w-11 rounded-full bg-slate-200 after:absolute after:top-[2px] after:left-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-slate-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-indigo-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-indigo-300"></div>
+                    </label>
+                  </div>
+
+                  {settingsForm.pinEnabled && (
+                    <div>
+                      <label className="mb-2 block text-sm font-semibold text-slate-700">
+                        PIN 4 Digit
+                      </label>
+                      <input
+                        type="password"
+                        value={settingsForm.pin}
+                        onChange={(e) => setSettingsForm({ ...settingsForm, pin: e.target.value.slice(0, 4) })}
+                        className={`${inputClasses} text-center tracking-[0.5em]`}
+                        placeholder="••••"
+                        inputMode="numeric"
+                        pattern="\d{4}"
+                        maxLength={4}
+                        required={settingsForm.pinEnabled}
+                      />
+                      <p className="mt-2 text-xs text-slate-500">
+                        {settings.pinEnabled ? "Masukkan PIN baru untuk mengubah, atau kosongkan untuk menghapus PIN." : "Masukkan PIN 4 digit untuk mengaktifkan proteksi PIN."}
+                      </p>
+                    </div>
+                  )}
+
+                  {settingsError && (
+                    <p className="text-sm font-semibold text-rose-500">{settingsError}</p>
+                  )}
+                  <button
+                    type="submit"
+                    disabled={settingsLoading || (settingsForm.pinEnabled && !settingsForm.pin)}
+                    className="w-full rounded-2xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    {settingsLoading ? "Menyimpan..." : "Simpan Pengaturan PIN"}
+                  </button>
+                </form>
+              </div>
             </div>
           </div>
         </div>
