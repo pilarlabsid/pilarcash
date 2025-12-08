@@ -6,11 +6,11 @@ import { io } from "socket.io-client";
 // PIN Code default (akan di-override oleh user settings)
 const DEFAULT_PIN_CODE = import.meta.env.VITE_PIN_CODE || "6745";
 
-const createInitialForm = (overrides = {}) => ({
+const createInitialForm = (overrides = {}, timezone = "Asia/Jakarta") => ({
   description: "",
   amount: "",
   type: "expense",
-  date: getToday(),
+  date: getToday(timezone),
   ...overrides,
 });
 
@@ -37,14 +37,14 @@ function App() {
   
   // Settings state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settings, setSettings] = useState({ name: "", email: "", pinEnabled: false });
-  const [settingsForm, setSettingsForm] = useState({ name: "", email: "", pin: "", pinEnabled: false });
+  const [settings, setSettings] = useState({ name: "", email: "", pinEnabled: false, timezone: "Asia/Jakarta" });
+  const [settingsForm, setSettingsForm] = useState({ name: "", email: "", pin: "", pinEnabled: false, timezone: "Asia/Jakarta" });
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsError, setSettingsError] = useState("");
 
   // Existing state
   const [entries, setEntries] = useState([]);
-  const [form, setForm] = useState(createInitialForm);
+  const [form, setForm] = useState(() => createInitialForm({}, settings.timezone || "Asia/Jakarta"));
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState(null);
@@ -95,7 +95,7 @@ function App() {
     setDeleteTarget(null);
     setIsDeleteConfirmOpen(false);
     setEditingTarget(null);
-    setForm(createInitialForm());
+    setForm(createInitialForm({}, settings.timezone || "Asia/Jakarta"));
     setPendingPayload(null);
     setTimeout(() => {
       modalRef.current
@@ -189,12 +189,14 @@ function App() {
           name: data.name,
           email: data.email,
           pinEnabled: data.pinEnabled || false,
+          timezone: data.timezone || "Asia/Jakarta",
         });
         setSettingsForm(prev => ({
           ...prev,
           name: data.name,
           email: data.email,
           pinEnabled: data.pinEnabled || false,
+          timezone: data.timezone || "Asia/Jakarta",
         }));
       }
     } catch (error) {
@@ -853,7 +855,7 @@ const runningEntries = useMemo(() => {
       amount: form.amount ? form.amount.toString().replace(/[^\d]/g, "") : "",
       // Hanya set default jika type tidak ada atau tidak valid, jangan ubah jika sudah "income"
       type: form.type === "income" || form.type === "expense" ? form.type : "expense",
-      date: form.date || getToday(),
+      date: form.date || getToday(settings.timezone || "Asia/Jakarta"),
     };
 
     const payload = {
@@ -927,7 +929,7 @@ const runningEntries = useMemo(() => {
       type: finalPayload.type === "income" || finalPayload.type === "expense" 
         ? finalPayload.type 
         : "expense",
-      date: finalPayload.date || getToday(),
+      date: finalPayload.date || getToday(settings.timezone || "Asia/Jakarta"),
     };
 
     // Validasi ulang finalPayload sebelum submit
@@ -970,7 +972,7 @@ const runningEntries = useMemo(() => {
           const body = await safeJson(response);
           throw new Error(body.message || "Gagal memperbarui transaksi.");
         }
-        setForm(createInitialForm());
+        setForm(createInitialForm({}, settings.timezone || "Asia/Jakarta"));
         setToast({ type: "success", message: "Transaksi diperbarui." });
         fetchEntries();
         resetPinFlow();
@@ -986,7 +988,7 @@ const runningEntries = useMemo(() => {
         const body = await safeJson(response);
         throw new Error(body.message || "Gagal menyimpan transaksi.");
       }
-      setForm(createInitialForm());
+      setForm(createInitialForm({}, settings.timezone || "Asia/Jakarta"));
       setToast({ type: "success", message: "Transaksi tersimpan!" });
       fetchEntries();
       resetPinFlow();
@@ -1066,7 +1068,7 @@ const runningEntries = useMemo(() => {
       if (!isValid) return;
     }
     const rows = runningEntries.map((entry) => ({
-      Tanggal: formatDate(entry.date),
+      Tanggal: formatDate(entry.date, settings.timezone || "Asia/Jakarta"),
       Uraian: entry.description,
       Pemasukan: entry.type === "income" ? entry.amount : 0,
       Pengeluaran: entry.type === "expense" ? entry.amount : 0,
@@ -1369,6 +1371,7 @@ const runningEntries = useMemo(() => {
         body: JSON.stringify({
           name: settingsForm.name,
           email: settingsForm.email,
+          timezone: settingsForm.timezone,
         }),
       });
 
@@ -1379,7 +1382,7 @@ const runningEntries = useMemo(() => {
       }
 
       setUser({ ...user, name: data.name, email: data.email });
-      setSettings({ ...settings, name: data.name, email: data.email });
+      setSettings({ ...settings, name: data.name, email: data.email, timezone: data.timezone || "Asia/Jakarta" });
       setToast({ type: "success", message: "Profile berhasil diperbarui." });
     } catch (error) {
       console.error(error);
@@ -1458,11 +1461,11 @@ const runningEntries = useMemo(() => {
           amount: String(entry.amount),
           type: entry.type,
           date: entry.date,
-        })
+        }, settings.timezone || "Asia/Jakarta")
       );
     } else {
       setEditingTarget(null);
-      setForm(createInitialForm());
+      setForm(createInitialForm({}, settings.timezone || "Asia/Jakarta"));
     }
     setIsPinStep(false);
     setPin("");
@@ -1763,6 +1766,7 @@ const runningEntries = useMemo(() => {
                   day: "numeric",
                   month: "long",
                   year: "numeric",
+                  timeZone: settings.timezone || "Asia/Jakarta",
                 })}
               </p>
               <p className="text-lg font-semibold text-white">
@@ -1771,6 +1775,7 @@ const runningEntries = useMemo(() => {
                   minute: "2-digit",
                   second: "2-digit",
                   hour12: false,
+                  timeZone: settings.timezone || "Asia/Jakarta",
                 })}
               </p>
             </div>
@@ -1884,6 +1889,71 @@ const runningEntries = useMemo(() => {
             </div>
             )}
             
+            {/* Mobile: Menu Button for Admin */}
+            {user?.role === 'admin' && (
+              <div className="relative sm:hidden">
+                <button
+                  type="button"
+                  onClick={() => setIsMenuOpen(!isMenuOpen)}
+                  className="inline-flex items-center justify-center rounded-2xl border border-white/30 px-4 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
+                  aria-label="Menu"
+                >
+                  <span className="mr-2">Menu</span>
+                  <svg
+                    className={`h-4 w-4 transition-transform ${isMenuOpen ? "rotate-180" : ""}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M19 9l-7 7-7-7"
+                    />
+                  </svg>
+                </button>
+
+                {/* Dropdown Menu for Admin */}
+                {isMenuOpen && (
+                  <>
+                    {/* Backdrop */}
+                    <div
+                      className="fixed inset-0 z-10"
+                      onClick={() => setIsMenuOpen(false)}
+                    />
+                    {/* Menu Items */}
+                    <div className="absolute right-0 top-full z-20 mt-2 w-48 rounded-2xl border border-white/20 bg-slate-800 shadow-2xl">
+                      <div className="py-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsSettingsOpen(true);
+                            fetchSettings();
+                            setIsMenuOpen(false);
+                          }}
+                          className="w-full px-4 py-3 text-left text-sm font-semibold text-white transition hover:bg-white/10"
+                        >
+                          Settings
+                        </button>
+                        <div className="my-1 border-t border-white/20" />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleLogout();
+                            setIsMenuOpen(false);
+                          }}
+                          className="w-full px-4 py-3 text-left text-sm font-semibold text-rose-400 transition hover:bg-white/10"
+                        >
+                          Logout
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            
             {/* Desktop: Secondary Actions - Horizontal */}
             <div className="hidden items-center gap-2 sm:flex">
               {user?.role !== 'admin' && (
@@ -1929,13 +1999,25 @@ const runningEntries = useMemo(() => {
               </>
               )}
               {user?.role === 'admin' && (
-                <button
-                  type="button"
-                  onClick={handleLogout}
-                  className="inline-flex items-center justify-center rounded-2xl border border-white/30 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-white/10 sm:px-4"
-                >
-                  Logout
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSettingsOpen(true);
+                      fetchSettings();
+                    }}
+                    className="inline-flex items-center justify-center rounded-2xl border border-white/30 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-white/10 sm:px-4"
+                  >
+                    Settings
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="inline-flex items-center justify-center rounded-2xl border border-white/30 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-white/10 sm:px-4"
+                  >
+                    Logout
+                  </button>
+                </>
               )}
             </div>
           </div>
@@ -2307,12 +2389,15 @@ const runningEntries = useMemo(() => {
                                   month: "short",
                                   year: "numeric",
                                   hour: "2-digit",
-                                  minute: "2-digit"
+                                  minute: "2-digit",
+                                  timeZone: settings.timezone || "Asia/Jakarta"
                                 })
                               : "Never"}
                           </td>
                           <td className="px-4 py-3 text-sm text-slate-500">
-                            {new Date(u.created_at).toLocaleDateString("id-ID")}
+                            {new Date(u.created_at).toLocaleDateString("id-ID", {
+                              timeZone: settings.timezone || "Asia/Jakarta"
+                            })}
                           </td>
                           <td className="px-4 py-3">
                             <div className="flex justify-center gap-2">
@@ -2461,7 +2546,7 @@ const runningEntries = useMemo(() => {
                                       .map((t) => (
                                         <tr key={t.id}>
                                           <td className="px-4 py-3 text-sm text-slate-600">
-                                            {formatDate(t.date)}
+                                            {formatDate(t.date, settings.timezone || "Asia/Jakarta")}
                                           </td>
                                           <td className="px-4 py-3 text-sm text-slate-600">{t.description}</td>
                                           <td className="px-4 py-3">
@@ -2597,7 +2682,7 @@ const runningEntries = useMemo(() => {
                         {runningEntries.map((entry, index) => (
                           <tr key={entry.id}>
                             <td className="px-4 py-3 text-slate-500">
-                              {formatDate(entry.date)}
+                              {formatDate(entry.date, settings.timezone || "Asia/Jakarta")}
                             </td>
                             <td className="px-4 py-3 font-semibold text-slate-900">
                               {entry.description}
@@ -2784,7 +2869,7 @@ const runningEntries = useMemo(() => {
                     <input
                       type="date"
                       name="date"
-                      value={form.date || getToday()}
+                      value={form.date || getToday(settings.timezone || "Asia/Jakarta")}
                       onChange={handleChange}
                       className={inputClasses}
                     />
@@ -3129,7 +3214,7 @@ const runningEntries = useMemo(() => {
                 <div className="space-y-1">
                   {importPreview.slice(0, 5).map((t, idx) => (
                     <p key={idx} className="text-xs text-slate-600">
-                      • {formatDate(t.date)} - {t.description} - {formatCurrency(t.amount)} ({t.type === "income" ? "Pemasukan" : "Pengeluaran"})
+                      • {formatDate(t.date, settings.timezone || "Asia/Jakarta")} - {t.description} - {formatCurrency(t.amount)} ({t.type === "income" ? "Pemasukan" : "Pengeluaran"})
                     </p>
                   ))}
                   {importPreview.length > 5 && (
@@ -3430,6 +3515,52 @@ const runningEntries = useMemo(() => {
                       placeholder="nama@email.com"
                       required
                     />
+                  </div>
+                  <div>
+                    <label className="mb-2 block text-sm font-semibold text-slate-700">
+                      Timezone
+                    </label>
+                    <select
+                      value={settingsForm.timezone || "Asia/Jakarta"}
+                      onChange={(e) => setSettingsForm({ ...settingsForm, timezone: e.target.value })}
+                      className={inputClasses}
+                    >
+                      <optgroup label="Indonesia">
+                        <option value="Asia/Jakarta">WIB (Jakarta) - GMT+7</option>
+                        <option value="Asia/Makassar">WITA (Makassar) - GMT+8</option>
+                        <option value="Asia/Jayapura">WIT (Jayapura) - GMT+9</option>
+                      </optgroup>
+                      <optgroup label="Asia">
+                        <option value="Asia/Singapore">Singapore - GMT+8</option>
+                        <option value="Asia/Kuala_Lumpur">Kuala Lumpur - GMT+8</option>
+                        <option value="Asia/Bangkok">Bangkok - GMT+7</option>
+                        <option value="Asia/Manila">Manila - GMT+8</option>
+                        <option value="Asia/Tokyo">Tokyo - GMT+9</option>
+                        <option value="Asia/Seoul">Seoul - GMT+9</option>
+                        <option value="Asia/Hong_Kong">Hong Kong - GMT+8</option>
+                        <option value="Asia/Shanghai">Shanghai - GMT+8</option>
+                      </optgroup>
+                      <optgroup label="Eropa">
+                        <option value="Europe/London">London - GMT+0</option>
+                        <option value="Europe/Paris">Paris - GMT+1</option>
+                        <option value="Europe/Berlin">Berlin - GMT+1</option>
+                        <option value="Europe/Moscow">Moscow - GMT+3</option>
+                      </optgroup>
+                      <optgroup label="Amerika">
+                        <option value="America/New_York">New York - GMT-5</option>
+                        <option value="America/Chicago">Chicago - GMT-6</option>
+                        <option value="America/Denver">Denver - GMT-7</option>
+                        <option value="America/Los_Angeles">Los Angeles - GMT-8</option>
+                      </optgroup>
+                      <optgroup label="Oceania">
+                        <option value="Australia/Sydney">Sydney - GMT+10</option>
+                        <option value="Australia/Melbourne">Melbourne - GMT+10</option>
+                        <option value="Pacific/Auckland">Auckland - GMT+12</option>
+                      </optgroup>
+                    </select>
+                    <p className="mt-2 text-xs text-slate-500">
+                      Pilih timezone untuk menampilkan waktu dan tanggal sesuai lokasi Anda.
+                    </p>
                   </div>
                   {settingsError && (
                     <p className="text-sm font-semibold text-rose-500">{settingsError}</p>

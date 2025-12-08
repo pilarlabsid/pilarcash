@@ -233,6 +233,7 @@ app.get(
         name: user.name,
         role: user.role || 'user',
         pinEnabled: user.pin_enabled || false,
+        timezone: user.timezone || 'Asia/Jakarta',
       },
     });
   })
@@ -252,6 +253,7 @@ app.get(
       email: settings.email,
       name: settings.name,
       pinEnabled: settings.pin_enabled || false,
+      timezone: settings.timezone || 'Asia/Jakarta',
       createdAt: settings.created_at,
     });
   })
@@ -262,7 +264,7 @@ app.put(
   "/api/user/profile",
   auth.authenticateToken,
   asyncHandler(async (req, res) => {
-    const { name, email } = req.body ?? {};
+    const { name, email, timezone } = req.body ?? {};
     const userId = req.user.userId;
 
     if (name !== undefined && (!name || !name.trim())) {
@@ -277,11 +279,22 @@ app.put(
       return res.status(400).json({ message: "Format email tidak valid." });
     }
 
+    // Validate timezone if provided
+    if (timezone !== undefined) {
+      // Basic validation - check if it's a valid timezone string
+      try {
+        Intl.DateTimeFormat(undefined, { timeZone: timezone });
+      } catch (e) {
+        return res.status(400).json({ message: "Timezone tidak valid." });
+      }
+    }
+
     try {
       const updated = await database.updateUserProfile({
         id: userId,
         name,
         email,
+        timezone,
       });
 
       if (!updated) {
@@ -293,6 +306,7 @@ app.put(
         email: updated.email,
         name: updated.name,
         pinEnabled: updated.pin_enabled || false,
+        timezone: updated.timezone || 'Asia/Jakarta',
       };
       
       // Broadcast update ke semua admin

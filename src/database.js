@@ -36,31 +36,31 @@ async function initDb() {
   try {
     // Test connection
     await pool.query("SELECT NOW()");
-    console.log("✅ Connected to PostgreSQL database");
+    console.log("Connected to PostgreSQL database");
 
     // Create tables if not exist
     await createSchema();
-    console.log("✅ Database schema initialized");
+    console.log("Database schema initialized");
   } catch (error) {
     if (error.code === "3D000") {
       // Database does not exist
-      console.error("\n❌ Database tidak ditemukan!");
-      console.error(`💡 Buat database dengan perintah berikut:`);
+      console.error("\nDatabase tidak ditemukan!");
+      console.error(`   Buat database dengan perintah berikut:`);
       console.error(`   createdb -U ${config.user} ${config.database}\n`);
       console.error(`   Atau jika menggunakan password:`);
       console.error(`   PGPASSWORD=${config.password} createdb -U ${config.user} ${config.database}\n`);
     } else if (error.code === "28P01") {
       // Authentication failed
-      console.error("\n❌ Gagal autentikasi ke PostgreSQL!");
-      console.error("💡 Pastikan username dan password di DATABASE_URL benar.\n");
+      console.error("\n Gagal autentikasi ke PostgreSQL!");
+      console.error(" Pastikan username dan password di DATABASE_URL benar.\n");
     } else if (error.code === "ECONNREFUSED") {
       // Connection refused
-      console.error("\n❌ Tidak bisa connect ke PostgreSQL!");
-      console.error("💡 Pastikan PostgreSQL service berjalan:");
+      console.error("\n Tidak bisa connect ke PostgreSQL!");
+      console.error(" Pastikan PostgreSQL service berjalan:");
       console.error("   macOS: brew services start postgresql");
       console.error("   Linux: sudo systemctl start postgresql\n");
     } else {
-      console.error("❌ Database initialization error:", error.message);
+      console.error(" Database initialization error:", error.message);
     }
     throw error;
   }
@@ -109,6 +109,10 @@ async function createSchema() {
                      WHERE table_name='users' AND column_name='login_count') THEN
         ALTER TABLE users ADD COLUMN login_count INTEGER DEFAULT 0;
       END IF;
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                     WHERE table_name='users' AND column_name='timezone') THEN
+        ALTER TABLE users ADD COLUMN timezone VARCHAR(50) DEFAULT 'Asia/Jakarta';
+      END IF;
     END $$;
   `);
 
@@ -154,7 +158,7 @@ async function createUser({ email, passwordHash, name }) {
 
 async function getUserByEmail(email) {
   const result = await pool.query(
-    `SELECT id, email, password_hash, name, role, last_login_at, is_active, login_count, created_at 
+    `SELECT id, email, password_hash, name, role, last_login_at, is_active, login_count, timezone, created_at 
      FROM users 
      WHERE email = $1`,
     [email.toLowerCase().trim()]
@@ -164,7 +168,7 @@ async function getUserByEmail(email) {
 
 async function getUserById(id) {
   const result = await pool.query(
-    `SELECT id, email, name, pin, pin_enabled, role, last_login_at, is_active, login_count, created_at 
+    `SELECT id, email, name, pin, pin_enabled, role, last_login_at, is_active, login_count, timezone, created_at 
      FROM users 
      WHERE id = $1`,
     [id]
@@ -187,7 +191,7 @@ async function updateLastLogin(userId) {
 // Get user settings (without sensitive data)
 async function getUserSettings(id) {
   const result = await pool.query(
-    `SELECT id, email, name, pin_enabled, created_at 
+    `SELECT id, email, name, pin_enabled, timezone, created_at 
      FROM users 
      WHERE id = $1`,
     [id]
@@ -196,7 +200,7 @@ async function getUserSettings(id) {
 }
 
 // Update user profile
-async function updateUserProfile({ id, name, email }) {
+async function updateUserProfile({ id, name, email, timezone }) {
   const updates = [];
   const values = [];
   let paramCount = 1;
@@ -216,6 +220,11 @@ async function updateUserProfile({ id, name, email }) {
     values.push(email.toLowerCase().trim());
   }
 
+  if (timezone !== undefined) {
+    updates.push(`timezone = $${paramCount++}`);
+    values.push(timezone);
+  }
+
   if (updates.length === 0) {
     return null;
   }
@@ -227,7 +236,7 @@ async function updateUserProfile({ id, name, email }) {
     `UPDATE users 
      SET ${updates.join(", ")}
      WHERE id = $${paramCount}
-     RETURNING id, email, name, pin_enabled, created_at`,
+     RETURNING id, email, name, pin_enabled, timezone, created_at`,
     values
   );
 
