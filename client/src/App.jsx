@@ -47,6 +47,9 @@ function App() {
   const [form, setForm] = useState(() => createInitialForm({}, settings.timezone || "Asia/Jakarta"));
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [toast, setToast] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
@@ -422,6 +425,7 @@ function App() {
   const handleLogin = async (e) => {
     e.preventDefault();
     setAuthError("");
+    setAuthLoading(true);
     
     try {
       const apiBase = getApiUrl();
@@ -453,15 +457,19 @@ function App() {
     } catch (error) {
       console.error(error);
       setAuthError(error.message);
+    } finally {
+      setAuthLoading(false);
     }
   };
 
   const handleRegister = async (e) => {
     e.preventDefault();
     setAuthError("");
+    setAuthLoading(true);
 
     if (registerForm.password.length < 6) {
       setAuthError("Password minimal 6 karakter.");
+      setAuthLoading(false);
       return;
     }
 
@@ -499,6 +507,8 @@ function App() {
     } catch (error) {
       console.error(error);
       setAuthError(error.message);
+    } finally {
+      setAuthLoading(false);
     }
   };
 
@@ -1069,25 +1079,33 @@ const runningEntries = useMemo(() => {
       const isValid = await validatePin();
       if (!isValid) return;
     }
-    const rows = runningEntries.map((entry) => ({
-      Tanggal: formatDate(entry.date, settings.timezone || "Asia/Jakarta"),
-      Uraian: entry.description,
-      Pemasukan: entry.type === "income" ? entry.amount : 0,
-      Pengeluaran: entry.type === "expense" ? entry.amount : 0,
-      Saldo: entry.runningBalance,
-    }));
+    setExporting(true);
+    try {
+      const rows = runningEntries.map((entry) => ({
+        Tanggal: formatDate(entry.date, settings.timezone || "Asia/Jakarta"),
+        Uraian: entry.description,
+        Pemasukan: entry.type === "income" ? entry.amount : 0,
+        Pengeluaran: entry.type === "expense" ? entry.amount : 0,
+        Saldo: entry.runningBalance,
+      }));
 
-    const worksheet = XLSXUtils.json_to_sheet(rows, {
-      header: ["Tanggal", "Uraian", "Pemasukan", "Pengeluaran", "Saldo"],
-    });
-    const workbook = XLSXUtils.book_new();
-    XLSXUtils.book_append_sheet(workbook, worksheet, "Transaksi");
-    const filename = `prava-cash-transactions-${new Date()
-      .toISOString()
-      .slice(0, 10)}.xlsx`;
-    writeXLSXFile(workbook, filename);
-    setToast({ type: "success", message: "File Excel siap diunduh." });
-    closeExportPinModal();
+      const worksheet = XLSXUtils.json_to_sheet(rows, {
+        header: ["Tanggal", "Uraian", "Pemasukan", "Pengeluaran", "Saldo"],
+      });
+      const workbook = XLSXUtils.book_new();
+      XLSXUtils.book_append_sheet(workbook, worksheet, "Transaksi");
+      const filename = `prava-cash-transactions-${new Date()
+        .toISOString()
+        .slice(0, 10)}.xlsx`;
+      writeXLSXFile(workbook, filename);
+      setToast({ type: "success", message: "File Excel siap diunduh." });
+      closeExportPinModal();
+    } catch (error) {
+      console.error(error);
+      setToast({ type: "error", message: "Gagal membuat file Excel." });
+    } finally {
+      setExporting(false);
+    }
   };
 
   const handlePinBack = () => {
@@ -1547,7 +1565,7 @@ const runningEntries = useMemo(() => {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50">
         <div className="text-center">
-          <div className="mb-4 text-4xl">⏳</div>
+          <LoadingSpinner size="xl" className="mx-auto mb-4" />
           <p className="text-sm font-semibold text-slate-600">Memuat...</p>
         </div>
       </div>
@@ -1623,12 +1641,13 @@ const runningEntries = useMemo(() => {
                     >
                       Daftar
                     </button>
-                    <button
+                    <LoadingButton
                       type="submit"
+                      loading={authLoading}
                       className="flex-1 rounded-2xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-indigo-700"
                     >
                       Login
-                    </button>
+                    </LoadingButton>
                   </div>
                 </form>
               </div>
@@ -1694,12 +1713,13 @@ const runningEntries = useMemo(() => {
                     >
                       Login
                     </button>
-                    <button
+                    <LoadingButton
                       type="submit"
+                      loading={authLoading}
                       className="flex-1 rounded-2xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-indigo-700"
                     >
                       Daftar
-                    </button>
+                    </LoadingButton>
                   </div>
                 </form>
               </div>
@@ -2066,7 +2086,13 @@ const runningEntries = useMemo(() => {
             </div>
 
             {/* Admin Dashboard Tab */}
-            {adminTab === "dashboard" && adminStats && (
+            {adminTab === "dashboard" && (
+              adminLoading && !adminStats ? (
+                <div className="py-20 text-center">
+                  <LoadingSpinner size="lg" className="mx-auto mb-3" />
+                  <p className="text-sm font-medium text-slate-500">Memuat dashboard...</p>
+                </div>
+              ) : adminStats ? (
               <div className="space-y-6">
                 {/* Key Metrics - System & User Activity */}
                 <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
@@ -2335,7 +2361,10 @@ const runningEntries = useMemo(() => {
 
             {/* Admin Users Tab */}
             {adminTab === "users" && (
-              <div className="rounded-2xl bg-white shadow-soft">
+              <div className="relative rounded-2xl bg-white shadow-soft">
+                {adminLoading && adminUsers.length === 0 && (
+                  <LoadingOverlay message="Memuat data users..." />
+                )}
                 <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-slate-100">
                     <thead className="bg-slate-50">
@@ -2429,7 +2458,10 @@ const runningEntries = useMemo(() => {
 
             {/* Admin Transactions Tab - Grouped by User */}
             {adminTab === "transactions" && (
-              <div className="space-y-4">
+              <div className="relative space-y-4">
+                {adminLoading && adminTransactions.length === 0 && (
+                  <LoadingOverlay message="Memuat data transaksi..." />
+                )}
                 {(() => {
                   // Group transactions by user
                   const transactionsByUser = adminTransactions.reduce((acc, transaction) => {
@@ -2660,8 +2692,9 @@ const runningEntries = useMemo(() => {
             </div>
 
             {loading ? (
-              <div className="py-20 text-center text-sm text-slate-500">
-                Memuat transaksi...
+              <div className="py-20 text-center">
+                <LoadingSpinner size="lg" className="mx-auto mb-3" />
+                <p className="text-sm font-medium text-slate-500">Memuat transaksi...</p>
               </div>
             ) : runningEntries.length === 0 ? (
               <EmptyState />
@@ -2930,38 +2963,37 @@ const runningEntries = useMemo(() => {
                     {resetting ? "Menghapus..." : settings.pinEnabled ? "Konfirmasi PIN" : "Konfirmasi"}
                   </button>
                 ) : isPinStep && pinMode === "delete" ? (
-                  <button
+                  <LoadingButton
                     type="button"
                     onClick={confirmDeleteWithPin}
-                    disabled={deleting}
+                    loading={deleting}
                     className="inline-flex w-full items-center justify-center rounded-2xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:bg-rose-300 sm:w-auto sm:flex-1"
                   >
-                    {deleting ? "Menghapus..." : settings.pinEnabled ? "Konfirmasi PIN" : "Konfirmasi"}
-                  </button>
+                    {settings.pinEnabled ? "Konfirmasi PIN" : "Konfirmasi"}
+                  </LoadingButton>
                 ) : isPinStep && pinMode === "export" ? (
-                  <button
+                  <LoadingButton
                     type="button"
                     onClick={confirmExportWithPin}
+                    loading={exporting}
                     className="inline-flex w-full items-center justify-center rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300 sm:w-auto sm:flex-1"
                   >
                     {settings.pinEnabled ? "Konfirmasi PIN" : "Konfirmasi"}
-                  </button>
+                  </LoadingButton>
                 ) : (
-                  <button
+                  <LoadingButton
                     type="submit"
-                    disabled={submitting}
+                    loading={submitting}
                     className="inline-flex w-full items-center justify-center rounded-2xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300 sm:w-auto sm:flex-1"
                   >
-                    {submitting
-                      ? "Memproses..."
-                      : isPinStep
+                    {isPinStep
                       ? settings.pinEnabled
                         ? "Konfirmasi PIN"
                         : "Konfirmasi"
                       : editingTarget
                       ? "Simpan Perubahan"
                       : "Lanjutkan"}
-                  </button>
+                  </LoadingButton>
                 )}
               </div>
             </form>
@@ -3127,7 +3159,8 @@ const runningEntries = useMemo(() => {
 
       {isImportFileOpen && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/70 px-4">
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 text-center shadow-2xl sm:p-8">
+          <div className="relative w-full max-w-md rounded-3xl bg-white p-6 text-center shadow-2xl sm:p-8">
+            {importing && <LoadingOverlay message="Mengimpor transaksi..." />}
             <p className="text-sm font-semibold uppercase tracking-wide text-indigo-500">
               Import Excel
             </p>
@@ -3198,7 +3231,8 @@ const runningEntries = useMemo(() => {
 
       {isImportPinOpen && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/70 px-4">
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 text-center shadow-2xl sm:p-8">
+          <div className="relative w-full max-w-md rounded-3xl bg-white p-6 text-center shadow-2xl sm:p-8">
+            {importing && <LoadingOverlay message="Mengimpor transaksi..." />}
             <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">
               Keamanan PIN
             </p>
@@ -3358,14 +3392,14 @@ const runningEntries = useMemo(() => {
               >
                 Batal
               </button>
-              <button
+              <LoadingButton
                 type="button"
                 onClick={confirmDeleteUser}
-                disabled={adminLoading}
-                className="flex-1 rounded-2xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-rose-700 disabled:opacity-50"
+                loading={adminLoading}
+                className="flex-1 rounded-2xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-rose-700"
               >
-                {adminLoading ? "Menghapus..." : "Hapus User"}
-              </button>
+                Hapus User
+              </LoadingButton>
             </div>
           </div>
         </div>
@@ -3448,13 +3482,13 @@ const runningEntries = useMemo(() => {
                 >
                   Batal
                 </button>
-                <button
+                <LoadingButton
                   type="submit"
-                  disabled={adminLoading}
-                  className="flex-1 rounded-2xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-indigo-700 disabled:opacity-50"
+                  loading={adminLoading}
+                  className="flex-1 rounded-2xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-indigo-700"
                 >
-                  {adminLoading ? "Menyimpan..." : "Simpan"}
-                </button>
+                  Simpan
+                </LoadingButton>
               </div>
             </form>
           </div>
@@ -3567,13 +3601,13 @@ const runningEntries = useMemo(() => {
                   {settingsError && (
                     <p className="text-sm font-semibold text-rose-500">{settingsError}</p>
                   )}
-                  <button
+                  <LoadingButton
                     type="submit"
-                    disabled={settingsLoading}
-                    className="w-full rounded-2xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-indigo-700 disabled:opacity-50"
+                    loading={settingsLoading}
+                    className="w-full rounded-2xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-indigo-700"
                   >
-                    {settingsLoading ? "Menyimpan..." : "Simpan Profile"}
-                  </button>
+                    Simpan Profile
+                  </LoadingButton>
                 </form>
               </div>
 
@@ -3624,13 +3658,14 @@ const runningEntries = useMemo(() => {
                   {settingsError && (
                     <p className="text-sm font-semibold text-rose-500">{settingsError}</p>
                   )}
-                  <button
+                  <LoadingButton
                     type="submit"
-                    disabled={settingsLoading || (settingsForm.pinEnabled && !settingsForm.pin)}
+                    loading={settingsLoading}
+                    disabled={settingsForm.pinEnabled && !settingsForm.pin}
                     className="w-full rounded-2xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-indigo-700 disabled:opacity-50"
                   >
-                    {settingsLoading ? "Menyimpan..." : "Simpan Pengaturan PIN"}
-                  </button>
+                    Simpan Pengaturan PIN
+                  </LoadingButton>
                 </form>
               </div>
             </div>
