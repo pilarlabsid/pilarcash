@@ -328,3 +328,4 @@ Sebelum deploy, pastikan:
 2. **Untuk Production:** Pertimbangkan upgrade ke paid plan untuk backup dan monitoring yang lebih baik
 3. **Backup:** Semua managed services (Railway, Supabase, Neon) sudah include auto-backup
 4. **Monitoring:** Gunakan dashboard provider untuk monitor database usage dan performance
+
