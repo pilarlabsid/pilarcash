@@ -191,12 +191,12 @@ async function createSchema() {
 }
 
 // User management functions
-async function createUser({ email, passwordHash, name }) {
+async function createUser({ email, passwordHash, name, role }) {
   const result = await pool.query(
-    `INSERT INTO users (email, password_hash, name) 
-     VALUES ($1, $2, $3) 
-     RETURNING id, email, name, created_at`,
-    [email.toLowerCase().trim(), passwordHash, name.trim()]
+    `INSERT INTO users (email, password_hash, name, role) 
+     VALUES ($1, $2, $3, $4) 
+     RETURNING id, email, name, role, created_at`,
+    [email.toLowerCase().trim(), passwordHash, name.trim(), role || 'user']
   );
   return result.rows[0];
 }
@@ -285,6 +285,18 @@ async function updateUserProfile({ id, name, email, timezone }) {
     values
   );
 
+  return result.rows[0] || null;
+}
+
+// Update user password
+async function updateUserPassword({ id, passwordHash }) {
+  const result = await pool.query(
+    `UPDATE users 
+     SET password_hash = $1, updated_at = CURRENT_TIMESTAMP
+     WHERE id = $2
+     RETURNING id, email, name, created_at`,
+    [passwordHash, id]
+  );
   return result.rows[0] || null;
 }
 
@@ -613,6 +625,7 @@ module.exports = {
   getUserById,
   getUserSettings,
   updateUserProfile,
+  updateUserPassword,
   updateUserPin,
   verifyUserPin,
   listTransactions,

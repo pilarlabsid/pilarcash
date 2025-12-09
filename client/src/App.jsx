@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { formatCurrency, formatDate, getToday } from "./lib/format";
 import { utils as XLSXUtils, writeFile as writeXLSXFile, read as readXLSX } from "xlsx";
 import { io } from "socket.io-client";
+import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 // PIN Code default (akan di-override oleh user settings)
 const DEFAULT_PIN_CODE = import.meta.env.VITE_PIN_CODE || "6745";
@@ -20,8 +21,65 @@ const STAT_STYLES = {
   balance: "from-indigo-500 via-blue-500 to-sky-500 text-white",
 };
 
-const inputClasses =
-  "w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-900 outline-none transition focus:border-indigo-500 focus:bg-white focus:ring-2 focus:ring-indigo-100";
+const getInputClasses = (darkMode) =>
+  `w-full rounded-2xl border px-4 py-3 text-sm font-medium outline-none transition focus:ring-2 focus:ring-indigo-100 ${
+    darkMode
+      ? "border-slate-600 bg-slate-800 text-white focus:border-indigo-500 focus:bg-slate-700"
+      : "border-slate-200 bg-slate-50 text-slate-900 focus:border-indigo-500 focus:bg-white"
+  }`;
+
+// Loading Spinner Component
+const LoadingSpinner = ({ size = "md", className = "" }) => {
+  const sizes = {
+    sm: "h-4 w-4 border-2",
+    md: "h-6 w-6 border-2",
+    lg: "h-8 w-8 border-3",
+    xl: "h-12 w-12 border-4",
+  };
+  return (
+    <div className={`inline-block ${className}`}>
+      <div
+        className={`${sizes[size]} animate-spin rounded-full border-indigo-600 border-t-transparent`}
+      />
+    </div>
+  );
+};
+
+// Loading Button Component
+const LoadingButton = ({ loading, children, className = "", disabled, ...props }) => {
+  return (
+    <button
+      {...props}
+      disabled={loading || disabled}
+      className={`${className} ${loading || disabled ? "cursor-not-allowed opacity-70" : ""}`}
+    >
+      {loading ? (
+        <span className="inline-flex items-center gap-2">
+          <LoadingSpinner size="sm" />
+          <span>Memproses...</span>
+        </span>
+      ) : (
+        children
+      )}
+    </button>
+  );
+};
+
+// Loading Overlay Component
+const LoadingOverlay = ({ message = "Memuat...", darkMode = false }) => {
+  return (
+    <div className={`absolute inset-0 z-50 flex items-center justify-center rounded-2xl backdrop-blur-sm ${
+      darkMode ? "bg-slate-900/80" : "bg-white/80"
+    }`}>
+      <div className="text-center">
+        <LoadingSpinner size="lg" className="mx-auto mb-3" />
+        <p className={`text-sm font-medium ${
+          darkMode ? "text-slate-300" : "text-slate-600"
+        }`}>{message}</p>
+      </div>
+    </div>
+  );
+};
 
 function App() {
   // Authentication state
@@ -38,7 +96,7 @@ function App() {
   // Settings state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settings, setSettings] = useState({ name: "", email: "", pinEnabled: false, timezone: "Asia/Jakarta" });
-  const [settingsForm, setSettingsForm] = useState({ name: "", email: "", pin: "", pinEnabled: false, timezone: "Asia/Jakarta" });
+  const [settingsForm, setSettingsForm] = useState({ name: "", email: "", password: "", pin: "", pinEnabled: false, timezone: "Asia/Jakarta" });
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsError, setSettingsError] = useState("");
 
@@ -82,11 +140,32 @@ function App() {
   const [adminUsers, setAdminUsers] = useState([]);
   const [adminTransactions, setAdminTransactions] = useState([]);
   const [adminLoading, setAdminLoading] = useState(false);
-  const [adminTab, setAdminTab] = useState("dashboard"); // "dashboard" | "users" | "transactions"
+  const [adminTab, setAdminTab] = useState("dashboard"); // "dashboard" | "users" | "admins" | "transactions"
   const [selectedUser, setSelectedUser] = useState(null);
   const [isEditUserModalOpen, setIsEditUserModalOpen] = useState(false);
-  const [editUserForm, setEditUserForm] = useState({ name: "", email: "", role: "user" });
+  const [editUserForm, setEditUserForm] = useState({ name: "", email: "", password: "" });
+  const [isCreateUserModalOpen, setIsCreateUserModalOpen] = useState(false);
+  const [createUserForm, setCreateUserForm] = useState({ name: "", email: "", password: "", role: "user" });
+  const [createUserLoading, setCreateUserLoading] = useState(false);
   const [expandedUsers, setExpandedUsers] = useState(new Set());
+  
+  // Dashboard enhancement states
+  const [darkMode, setDarkMode] = useState(() => {
+    const saved = localStorage.getItem('darkMode');
+    return saved ? JSON.parse(saved) : false;
+  });
+  const [selectedTheme, setSelectedTheme] = useState(() => {
+    return localStorage.getItem('selectedTheme') || 'default';
+  });
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filterDateFrom, setFilterDateFrom] = useState("");
+  const [filterDateTo, setFilterDateTo] = useState("");
+  const [filterCategory, setFilterCategory] = useState("");
+  const [filterType, setFilterType] = useState(""); // "income" | "expense" | ""
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(25);
+  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+  const [chartPeriod, setChartPeriod] = useState("monthly"); // "daily" | "monthly"
 
   const resetPinFlow = () => {
     setPin("");
@@ -331,7 +410,7 @@ function App() {
     setEditUserForm({
       name: userData.name,
       email: userData.email,
-      role: userData.role || 'user',
+      password: "", // Password kosong, hanya diisi jika ingin diubah
     });
     setIsEditUserModalOpen(true);
   };
@@ -349,15 +428,26 @@ function App() {
       if (token) {
         headers["Authorization"] = `Bearer ${token}`;
       }
+      // Hanya kirim password jika diisi
+      const updateData = {
+        name: editUserForm.name,
+        email: editUserForm.email,
+      };
+      if (editUserForm.password && editUserForm.password.trim() !== "") {
+        updateData.password = editUserForm.password;
+      }
+      
       const response = await fetch(`${apiBase}/api/admin/users/${selectedUser.id}`, {
         method: "PUT",
         headers,
-        body: JSON.stringify(editUserForm),
+        body: JSON.stringify(updateData),
       });
       
       if (response.ok) {
         setToast({ type: "success", message: "User berhasil diperbarui." });
         setIsEditUserModalOpen(false);
+        setSelectedUser(null);
+        setEditUserForm({ name: "", email: "", password: "" }); // Reset form
         fetchAdminUsers();
       } else {
         const data = await response.json();
@@ -407,6 +497,43 @@ function App() {
     } finally {
       setAdminLoading(false);
       setDeleteUserTarget(null);
+    }
+  };
+
+  const handleCreateUser = async (e) => {
+    e.preventDefault();
+    if (!token) return;
+    
+    setCreateUserLoading(true);
+    
+    try {
+      const apiBase = getApiUrl();
+      const headers = {
+        "Content-Type": "application/json",
+      };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const response = await fetch(`${apiBase}/api/admin/users`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(createUserForm),
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setToast({ type: "success", message: `${data.role === 'admin' ? 'Admin' : 'User'} berhasil dibuat.` });
+        setIsCreateUserModalOpen(false);
+        setCreateUserForm({ name: "", email: "", password: "", role: "user" });
+        fetchAdminUsers();
+      } else {
+        const data = await response.json();
+        setToast({ type: "error", message: data.message || "Gagal membuat user." });
+      }
+    } catch (error) {
+      setToast({ type: "error", message: "Gagal membuat user." });
+    } finally {
+      setCreateUserLoading(false);
     }
   };
 
@@ -804,6 +931,26 @@ function App() {
     return () => clearInterval(timer);
   }, []);
 
+  // Dark mode effect
+  useEffect(() => {
+    localStorage.setItem('darkMode', JSON.stringify(darkMode));
+    if (darkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [darkMode]);
+
+  // Theme effect
+  useEffect(() => {
+    localStorage.setItem('selectedTheme', selectedTheme);
+  }, [selectedTheme]);
+
+  // Reset page when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, filterDateFrom, filterDateTo, filterCategory, filterType]);
+
   const sortedEntries = useMemo(() => {
     return [...entries].sort((a, b) => {
       const dateDiff = new Date(b.date) - new Date(a.date);
@@ -836,6 +983,252 @@ const runningEntries = useMemo(() => {
       { income: 0, expense: 0, balance: 0 }
     );
   }, [runningEntries]);
+
+  // Filtered and searched entries
+  const filteredEntries = useMemo(() => {
+    let filtered = [...runningEntries];
+
+    // Search filter
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      filtered = filtered.filter(entry => 
+        entry.description?.toLowerCase().includes(query)
+      );
+    }
+
+    // Date range filter
+    if (filterDateFrom) {
+      filtered = filtered.filter(entry => new Date(entry.date) >= new Date(filterDateFrom));
+    }
+    if (filterDateTo) {
+      filtered = filtered.filter(entry => new Date(entry.date) <= new Date(filterDateTo));
+    }
+
+    // Category filter (if we add category field later)
+    if (filterCategory) {
+      // Placeholder for category filter
+      // filtered = filtered.filter(entry => entry.category === filterCategory);
+    }
+
+    // Type filter
+    if (filterType) {
+      filtered = filtered.filter(entry => entry.type === filterType);
+    }
+
+    return filtered;
+  }, [runningEntries, searchQuery, filterDateFrom, filterDateTo, filterCategory, filterType]);
+
+  // Paginated entries
+  const paginatedEntries = useMemo(() => {
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    const endIndex = startIndex + itemsPerPage;
+    return filteredEntries.slice(startIndex, endIndex);
+  }, [filteredEntries, currentPage, itemsPerPage]);
+
+  const totalPages = Math.ceil(filteredEntries.length / itemsPerPage);
+
+  // Reset filters
+  const resetFilters = () => {
+    setSearchQuery("");
+    setFilterDateFrom("");
+    setFilterDateTo("");
+    setFilterCategory("");
+    setFilterType("");
+    setCurrentPage(1);
+  };
+
+  // Chart data for line chart (daily balance)
+  const dailyBalanceData = useMemo(() => {
+    const dataMap = new Map();
+    let runningBalance = 0;
+    
+    const sorted = [...entries].sort((a, b) => new Date(a.date) - new Date(b.date));
+    
+    sorted.forEach(entry => {
+      runningBalance += entry.type === "income" ? entry.amount : -entry.amount;
+      const dateKey = entry.date;
+      dataMap.set(dateKey, runningBalance);
+    });
+
+    return Array.from(dataMap.entries()).map(([date, balance]) => ({
+      date,
+      balance
+    }));
+  }, [entries]);
+
+  // Monthly balance data
+  const monthlyBalanceData = useMemo(() => {
+    const dataMap = new Map();
+    let runningBalance = 0;
+    
+    const sorted = [...entries].sort((a, b) => new Date(a.date) - new Date(b.date));
+    
+    sorted.forEach(entry => {
+      runningBalance += entry.type === "income" ? entry.amount : -entry.amount;
+      const date = new Date(entry.date);
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      dataMap.set(monthKey, runningBalance);
+    });
+
+    return Array.from(dataMap.entries()).map(([month, balance]) => ({
+      month,
+      balance
+    }));
+  }, [entries]);
+
+  // Income vs Expense data (monthly)
+  const incomeExpenseData = useMemo(() => {
+    const dataMap = new Map();
+    
+    entries.forEach(entry => {
+      const date = new Date(entry.date);
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      
+      if (!dataMap.has(monthKey)) {
+        dataMap.set(monthKey, { month: monthKey, income: 0, expense: 0 });
+      }
+      
+      const data = dataMap.get(monthKey);
+      if (entry.type === "income") {
+        data.income += entry.amount;
+      } else {
+        data.expense += entry.amount;
+      }
+    });
+
+    return Array.from(dataMap.values()).sort((a, b) => a.month.localeCompare(b.month));
+  }, [entries]);
+
+  // Expense by category (pie chart) - using description as category for now
+  const expenseByCategory = useMemo(() => {
+    const categoryMap = new Map();
+    
+    entries
+      .filter(entry => entry.type === "expense")
+      .forEach(entry => {
+        const category = entry.description || "Lainnya";
+        const current = categoryMap.get(category) || 0;
+        categoryMap.set(category, current + entry.amount);
+      });
+
+    return Array.from(categoryMap.entries())
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 10); // Top 10 categories
+  }, [entries]);
+
+  // Insights data
+  const insights = useMemo(() => {
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+    const lastMonth = currentMonth === 0 ? 11 : currentMonth - 1;
+    const lastMonthYear = currentMonth === 0 ? currentYear - 1 : currentYear;
+
+    // Current month expenses
+    const currentMonthExpenses = entries
+      .filter(entry => {
+        const date = new Date(entry.date);
+        return entry.type === "expense" && 
+               date.getMonth() === currentMonth && 
+               date.getFullYear() === currentYear;
+      })
+      .reduce((sum, entry) => sum + entry.amount, 0);
+
+    // Last month expenses
+    const lastMonthExpenses = entries
+      .filter(entry => {
+        const date = new Date(entry.date);
+        return entry.type === "expense" && 
+               date.getMonth() === lastMonth && 
+               date.getFullYear() === lastMonthYear;
+      })
+      .reduce((sum, entry) => sum + entry.amount, 0);
+
+    // Category with largest expense this month
+    const categoryMap = new Map();
+    entries
+      .filter(entry => {
+        const date = new Date(entry.date);
+        return entry.type === "expense" && 
+               date.getMonth() === currentMonth && 
+               date.getFullYear() === currentYear;
+      })
+      .forEach(entry => {
+        const category = entry.description || "Lainnya";
+        const current = categoryMap.get(category) || 0;
+        categoryMap.set(category, current + entry.amount);
+      });
+    
+    const topCategory = Array.from(categoryMap.entries())
+      .sort((a, b) => b[1] - a[1])[0] || ["-", 0];
+
+    // Total transactions per month
+    const transactionsByMonth = new Map();
+    entries.forEach(entry => {
+      const date = new Date(entry.date);
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      const current = transactionsByMonth.get(monthKey) || 0;
+      transactionsByMonth.set(monthKey, current + 1);
+    });
+
+    // Day with largest expense
+    const dayExpenseMap = new Map();
+    entries
+      .filter(entry => entry.type === "expense")
+      .forEach(entry => {
+        const dateKey = entry.date;
+        const current = dayExpenseMap.get(dateKey) || 0;
+        dayExpenseMap.set(dateKey, current + entry.amount);
+      });
+    
+    const topDay = Array.from(dayExpenseMap.entries())
+      .sort((a, b) => b[1] - a[1])[0] || [null, 0];
+
+    return {
+      currentMonthExpenses,
+      lastMonthExpenses,
+      expenseChange: lastMonthExpenses > 0 
+        ? ((currentMonthExpenses - lastMonthExpenses) / lastMonthExpenses * 100).toFixed(1)
+        : currentMonthExpenses > 0 ? "100" : "0",
+      topCategory: { name: topCategory[0], amount: topCategory[1] },
+      transactionsByMonth: Array.from(transactionsByMonth.entries())
+        .map(([month, count]) => ({ month, count }))
+        .sort((a, b) => a.month.localeCompare(b.month))
+        .slice(-6), // Last 6 months
+      topDay: { date: topDay[0], amount: topDay[1] }
+    };
+  }, [entries]);
+
+  // Calendar heatmap data
+  const heatmapData = useMemo(() => {
+    const dataMap = new Map();
+    
+    entries.forEach(entry => {
+      // Pastikan format tanggal konsisten (YYYY-MM-DD)
+      let dateKey = entry.date;
+      
+      // Jika dateKey bukan format YYYY-MM-DD, convert dulu
+      if (dateKey && !/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+        const date = new Date(dateKey);
+        if (!isNaN(date.getTime())) {
+          const year = date.getFullYear();
+          const month = String(date.getMonth() + 1).padStart(2, '0');
+          const day = String(date.getDate()).padStart(2, '0');
+          dateKey = `${year}-${month}-${day}`;
+        } else {
+          return; // Skip jika tidak bisa di-parse
+        }
+      }
+      
+      if (dateKey) {
+        const current = dataMap.get(dateKey) || 0;
+        dataMap.set(dateKey, current + 1); // Count transactions per day
+      }
+    });
+
+    return dataMap;
+  }, [entries]);
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -1385,13 +1778,19 @@ const runningEntries = useMemo(() => {
 
     try {
       const apiBase = getApiUrl();
+      // Hanya kirim password jika diisi
+      const updateData = {
+        name: settingsForm.name,
+        email: settingsForm.email,
+        timezone: settingsForm.timezone,
+      };
+      if (settingsForm.password && settingsForm.password.trim() !== "") {
+        updateData.password = settingsForm.password;
+      }
+      
       const response = await authenticatedFetch(`${apiBase}/api/user/profile`, {
         method: "PUT",
-        body: JSON.stringify({
-          name: settingsForm.name,
-          email: settingsForm.email,
-          timezone: settingsForm.timezone,
-        }),
+        body: JSON.stringify(updateData),
       });
 
       const data = await response.json();
@@ -1402,6 +1801,7 @@ const runningEntries = useMemo(() => {
 
       setUser({ ...user, name: data.name, email: data.email });
       setSettings({ ...settings, name: data.name, email: data.email, timezone: data.timezone || "Asia/Jakarta" });
+      setSettingsForm({ ...settingsForm, password: "" }); // Reset password field setelah berhasil
       setToast({ type: "success", message: "Profile berhasil diperbarui." });
     } catch (error) {
       console.error(error);
@@ -1596,31 +1996,39 @@ const runningEntries = useMemo(() => {
 
             {/* Login Modal */}
             {isLoginModalOpen && (
-              <div className="rounded-3xl bg-white p-8 shadow-2xl">
-                <h2 className="mb-6 text-2xl font-semibold text-slate-900">Login</h2>
+              <div className={`rounded-3xl p-8 shadow-2xl ${
+                darkMode ? "bg-slate-800" : "bg-white"
+              }`}>
+                <h2 className={`mb-6 text-2xl font-semibold ${
+                  darkMode ? "text-white" : "text-slate-900"
+                }`}>Login</h2>
                 <form onSubmit={handleLogin} className="space-y-4">
                   <div>
-                    <label className="mb-2 block text-sm font-semibold text-slate-700">
+                    <label className={`mb-2 block text-sm font-semibold ${
+                      darkMode ? "text-slate-300" : "text-slate-700"
+                    }`}>
                       Email
                     </label>
                     <input
                       type="email"
                       value={loginForm.email}
                       onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })}
-                      className={inputClasses}
+                      className={getInputClasses(darkMode)}
                       placeholder="nama@email.com"
                       required
                     />
                   </div>
                   <div>
-                    <label className="mb-2 block text-sm font-semibold text-slate-700">
+                    <label className={`mb-2 block text-sm font-semibold ${
+                      darkMode ? "text-slate-300" : "text-slate-700"
+                    }`}>
                       Password
                     </label>
                     <input
                       type="password"
                       value={loginForm.password}
                       onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
-                      className={inputClasses}
+                      className={getInputClasses(darkMode)}
                       placeholder="••••••"
                       required
                     />
@@ -1636,7 +2044,11 @@ const runningEntries = useMemo(() => {
                         setIsRegisterModalOpen(true);
                         setAuthError("");
                       }}
-                      className="flex-1 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+                      className={`flex-1 rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                        darkMode
+                          ? "border-slate-600 text-slate-300 hover:bg-slate-700"
+                          : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                      }`}
                     >
                       Daftar
                     </button>
@@ -1654,44 +2066,54 @@ const runningEntries = useMemo(() => {
 
             {/* Register Modal */}
             {isRegisterModalOpen && (
-              <div className="rounded-3xl bg-white p-8 shadow-2xl">
-                <h2 className="mb-6 text-2xl font-semibold text-slate-900">Daftar</h2>
+              <div className={`rounded-3xl p-8 shadow-2xl ${
+                darkMode ? "bg-slate-800" : "bg-white"
+              }`}>
+                <h2 className={`mb-6 text-2xl font-semibold ${
+                  darkMode ? "text-white" : "text-slate-900"
+                }`}>Daftar</h2>
                 <form onSubmit={handleRegister} className="space-y-4">
                   <div>
-                    <label className="mb-2 block text-sm font-semibold text-slate-700">
+                    <label className={`mb-2 block text-sm font-semibold ${
+                      darkMode ? "text-slate-300" : "text-slate-700"
+                    }`}>
                       Nama
                     </label>
                     <input
                       type="text"
                       value={registerForm.name}
                       onChange={(e) => setRegisterForm({ ...registerForm, name: e.target.value })}
-                      className={inputClasses}
+                      className={getInputClasses(darkMode)}
                       placeholder="Nama Lengkap"
                       required
                     />
                   </div>
                   <div>
-                    <label className="mb-2 block text-sm font-semibold text-slate-700">
+                    <label className={`mb-2 block text-sm font-semibold ${
+                      darkMode ? "text-slate-300" : "text-slate-700"
+                    }`}>
                       Email
                     </label>
                     <input
                       type="email"
                       value={registerForm.email}
                       onChange={(e) => setRegisterForm({ ...registerForm, email: e.target.value })}
-                      className={inputClasses}
+                      className={getInputClasses(darkMode)}
                       placeholder="nama@email.com"
                       required
                     />
                   </div>
                   <div>
-                    <label className="mb-2 block text-sm font-semibold text-slate-700">
+                    <label className={`mb-2 block text-sm font-semibold ${
+                      darkMode ? "text-slate-300" : "text-slate-700"
+                    }`}>
                       Password
                     </label>
                     <input
                       type="password"
                       value={registerForm.password}
                       onChange={(e) => setRegisterForm({ ...registerForm, password: e.target.value })}
-                      className={inputClasses}
+                      className={getInputClasses(darkMode)}
                       placeholder="Minimal 6 karakter"
                       required
                       minLength={6}
@@ -1708,7 +2130,11 @@ const runningEntries = useMemo(() => {
                         setIsLoginModalOpen(true);
                         setAuthError("");
                       }}
-                      className="flex-1 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+                      className={`flex-1 rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                        darkMode
+                          ? "border-slate-600 text-slate-300 hover:bg-slate-700"
+                          : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                      }`}
                     >
                       Login
                     </button>
@@ -1726,19 +2152,25 @@ const runningEntries = useMemo(() => {
 
             {/* Default: Show login button */}
             {!isLoginModalOpen && !isRegisterModalOpen && (
-              <div className="rounded-3xl bg-white p-8 shadow-2xl text-center">
-                <p className="mb-6 text-slate-600">Silakan login untuk melanjutkan</p>
+              <div className={`rounded-3xl p-8 shadow-2xl text-center ${
+                darkMode ? "bg-slate-800" : "bg-white"
+              }`}>
+                <p className={`mb-6 ${
+                  darkMode ? "text-slate-300" : "text-slate-600"
+                }`}>Silakan login untuk melanjutkan</p>
                 <button
                   onClick={() => setIsLoginModalOpen(true)}
                   className="w-full rounded-2xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:bg-indigo-700"
                 >
                   Login
                 </button>
-                <p className="mt-4 text-sm text-slate-500">
+                <p className={`mt-4 text-sm ${
+                  darkMode ? "text-slate-400" : "text-slate-500"
+                }`}>
                   Belum punya akun?{" "}
                   <button
                     onClick={() => setIsRegisterModalOpen(true)}
-                    className="font-semibold text-indigo-600 hover:text-indigo-700"
+                    className="font-semibold text-indigo-400 hover:text-indigo-300"
                   >
                     Daftar di sini
                   </button>
@@ -1754,7 +2186,9 @@ const runningEntries = useMemo(() => {
   // Show dashboard if authenticated
   return (
     <>
-    <div className="min-h-screen bg-slate-50 pb-4">
+    <div className={`min-h-screen pb-4 transition-colors ${
+      darkMode ? "bg-slate-900" : "bg-slate-50"
+    }`}>
       {toast && (
         <div
           className={`fixed right-6 top-6 z-50 rounded-2xl px-4 py-3 text-white shadow-2xl transition-all ${
@@ -1768,37 +2202,129 @@ const runningEntries = useMemo(() => {
       )}
 
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-4 pt-8 sm:px-6 lg:px-8">
-        <header className="flex flex-col gap-5 rounded-3xl bg-gradient-to-r from-slate-900 via-indigo-900 to-slate-800 px-6 py-8 text-white shadow-soft sm:px-8">
+        <header className={`flex flex-col gap-5 rounded-3xl px-6 py-8 shadow-soft sm:px-8 transition-colors duration-300 ${
+          darkMode 
+            ? "bg-gradient-to-r from-slate-800 via-indigo-900 to-slate-800 text-white" 
+            : "bg-gradient-to-r from-slate-900 via-indigo-900 to-slate-800 text-white"
+        }`}>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div className="text-center sm:text-left">
-              <p className="text-xs uppercase tracking-[0.4em] text-indigo-200">
-                Prava Cash
-              </p>
+            <div className="flex items-center gap-3 text-center sm:text-left">
+              {/* Avatar */}
               {user && (
-                <p className="mt-1 text-sm font-medium text-white/80">
-                  Halo, {user.name}
-                </p>
+                <div className="relative">
+                  <button
+                    onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
+                    className="flex h-10 w-10 items-center justify-center rounded-full bg-white/20 text-sm font-semibold text-white transition hover:bg-white/30 focus:outline-none focus:ring-2 focus:ring-white/50"
+                  >
+                    {user.name?.charAt(0).toUpperCase() || "U"}
+                  </button>
+                  {/* Profile Menu */}
+                  {isProfileMenuOpen && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-10"
+                        onClick={() => setIsProfileMenuOpen(false)}
+                      />
+                      <div className={`absolute left-0 top-full z-20 mt-2 w-56 rounded-2xl border shadow-2xl ${
+                        darkMode 
+                          ? "border-white/20 bg-slate-800" 
+                          : "border-slate-200 bg-white"
+                      }`}>
+                        <div className={`p-4 border-b ${
+                          darkMode ? "border-white/20" : "border-slate-200"
+                        }`}>
+                          <p className={`text-sm font-semibold ${
+                            darkMode ? "text-white" : "text-slate-900"
+                          }`}>{user.name}</p>
+                          <p className={`text-xs ${
+                            darkMode ? "text-white/70" : "text-slate-600"
+                          }`}>{user.email}</p>
+                        </div>
+                        <div className="py-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsSettingsOpen(true);
+                              fetchSettings();
+                              setIsProfileMenuOpen(false);
+                            }}
+                            className={`w-full px-4 py-2 text-left text-sm font-medium transition ${
+                              darkMode 
+                                ? "text-white hover:bg-white/10" 
+                                : "text-slate-700 hover:bg-slate-50"
+                            }`}
+                          >
+                            Pengaturan Profil
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedTheme(selectedTheme === 'default' ? 'gradient' : 'default');
+                              setIsProfileMenuOpen(false);
+                            }}
+                            className={`w-full px-4 py-2 text-left text-sm font-medium transition ${
+                              darkMode 
+                                ? "text-white hover:bg-white/10" 
+                                : "text-slate-700 hover:bg-slate-50"
+                            }`}
+                          >
+                            {selectedTheme === 'default' ? 'Tema Gradient' : 'Tema Default'}
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
               )}
+              <div>
+                <p className="text-xs uppercase tracking-[0.4em] text-indigo-200">
+                  Prava Cash
+                </p>
+                {user && (
+                  <p className="mt-1 text-sm font-medium text-white/80">
+                    Halo, {user.name}
+                  </p>
+                )}
+              </div>
             </div>
-            <div className="text-center sm:text-right">
-              <p className="text-sm font-medium text-white/90">
-                {currentTime.toLocaleDateString("id-ID", {
-                  weekday: "long",
-                  day: "numeric",
-                  month: "long",
-                  year: "numeric",
-                  timeZone: settings.timezone || "Asia/Jakarta",
-                })}
-              </p>
-              <p className="text-lg font-semibold text-white">
-                {currentTime.toLocaleTimeString("id-ID", {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  second: "2-digit",
-                  hour12: false,
-                  timeZone: settings.timezone || "Asia/Jakarta",
-                })}
-              </p>
+            <div className="flex items-center gap-4">
+              {/* Dark Mode Toggle */}
+              <button
+                type="button"
+                onClick={() => setDarkMode(!darkMode)}
+                className="rounded-full p-2 text-white transition hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white/50"
+                aria-label={darkMode ? "Light mode" : "Dark mode"}
+              >
+                {darkMode ? (
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                  </svg>
+                ) : (
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                  </svg>
+                )}
+              </button>
+              <div className="text-center sm:text-right">
+                <p className="text-sm font-medium text-white/90">
+                  {currentTime.toLocaleDateString("id-ID", {
+                    weekday: "long",
+                    day: "numeric",
+                    month: "long",
+                    year: "numeric",
+                    timeZone: settings.timezone || "Asia/Jakarta",
+                  })}
+                </p>
+                <p className="text-lg font-semibold text-white">
+                  {currentTime.toLocaleTimeString("id-ID", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                    hour12: false,
+                    timeZone: settings.timezone || "Asia/Jakarta",
+                  })}
+                </p>
+              </div>
             </div>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -2048,13 +2574,17 @@ const runningEntries = useMemo(() => {
         {user?.role === 'admin' && (
           <div className="space-y-6">
             {/* Admin Tabs */}
-            <div className="flex gap-2 rounded-2xl bg-white p-2 shadow-soft">
+            <div className={`flex gap-2 rounded-2xl p-2 shadow-soft ${
+              darkMode ? "bg-slate-800" : "bg-white"
+            }`}>
               <button
                 type="button"
                 onClick={() => setAdminTab("dashboard")}
                 className={`flex-1 rounded-xl px-4 py-3 text-sm font-semibold transition ${
                   adminTab === "dashboard"
                     ? "bg-indigo-600 text-white"
+                    : darkMode
+                    ? "text-slate-300 hover:bg-slate-700"
                     : "text-slate-600 hover:bg-slate-50"
                 }`}
               >
@@ -2062,25 +2592,29 @@ const runningEntries = useMemo(() => {
               </button>
               <button
                 type="button"
-                onClick={() => setAdminTab("users")}
-                className={`flex-1 rounded-xl px-4 py-3 text-sm font-semibold transition ${
-                  adminTab === "users"
-                    ? "bg-indigo-600 text-white"
-                    : "text-slate-600 hover:bg-slate-50"
-                }`}
-              >
-                Users ({adminUsers.length})
-              </button>
-              <button
-                type="button"
                 onClick={() => setAdminTab("transactions")}
                 className={`flex-1 rounded-xl px-4 py-3 text-sm font-semibold transition ${
                   adminTab === "transactions"
                     ? "bg-indigo-600 text-white"
+                    : darkMode
+                    ? "text-slate-300 hover:bg-slate-700"
                     : "text-slate-600 hover:bg-slate-50"
                 }`}
               >
                 Transactions ({adminTransactions.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setAdminTab("users")}
+                className={`flex-1 rounded-xl px-4 py-3 text-sm font-semibold transition ${
+                  adminTab === "users"
+                    ? "bg-indigo-600 text-white"
+                    : darkMode
+                    ? "text-slate-300 hover:bg-slate-700"
+                    : "text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                Users & Admins ({adminUsers.length})
               </button>
             </div>
 
@@ -2089,10 +2623,12 @@ const runningEntries = useMemo(() => {
               adminLoading && !adminStats ? (
                 <div className="py-20 text-center">
                   <LoadingSpinner size="lg" className="mx-auto mb-3" />
-                  <p className="text-sm font-medium text-slate-500">Memuat dashboard...</p>
+                  <p className={`text-sm font-medium ${
+                    darkMode ? "text-slate-400" : "text-slate-500"
+                  }`}>Memuat dashboard...</p>
                 </div>
               ) : adminStats ? (
-              <div className="space-y-6">
+                <div className="space-y-6">
                 {/* Key Metrics - System & User Activity */}
                 <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
                   <StatCard
@@ -2118,44 +2654,60 @@ const runningEntries = useMemo(() => {
                 </div>
 
                 {/* Transaction Volume Metrics */}
-                <div className="grid gap-6 rounded-2xl bg-white p-6 shadow-soft sm:grid-cols-2">
+                <div className={`grid gap-6 rounded-2xl p-6 shadow-soft sm:grid-cols-2 ${
+                  darkMode ? "bg-slate-800" : "bg-white"
+                }`}>
                   <div>
-                    <h3 className="mb-4 text-lg font-semibold text-slate-900">Transaction Volume</h3>
+                    <h3 className={`mb-4 text-lg font-semibold ${
+                      darkMode ? "text-white" : "text-slate-900"
+                    }`}>Transaction Volume</h3>
                     <div className="space-y-2">
                       <div className="flex justify-between text-sm">
-                        <span className="text-slate-600">Income Transactions</span>
-                        <span className="font-semibold text-slate-900">
+                        <span className={darkMode ? "text-slate-400" : "text-slate-600"}>Income Transactions</span>
+                        <span className={`font-semibold ${
+                          darkMode ? "text-white" : "text-slate-900"
+                        }`}>
                           {adminStats.transactionsByType?.find(t => t.type === 'income')?.count || 0}
                         </span>
                       </div>
                       <div className="flex justify-between text-sm">
-                        <span className="text-slate-600">Expense Transactions</span>
-                        <span className="font-semibold text-slate-900">
+                        <span className={darkMode ? "text-slate-400" : "text-slate-600"}>Expense Transactions</span>
+                        <span className={`font-semibold ${
+                          darkMode ? "text-white" : "text-slate-900"
+                        }`}>
                           {adminStats.transactionsByType?.find(t => t.type === 'expense')?.count || 0}
                         </span>
                       </div>
-                      <div className="mt-3 flex justify-between border-t border-slate-200 pt-2 text-sm font-semibold">
-                        <span className="text-slate-900">Avg Transaction Value</span>
-                        <span className="text-indigo-600">
+                      <div className={`mt-3 flex justify-between border-t pt-2 text-sm font-semibold ${
+                        darkMode ? "border-slate-700" : "border-slate-200"
+                      }`}>
+                        <span className={darkMode ? "text-white" : "text-slate-900"}>Avg Transaction Value</span>
+                        <span className={darkMode ? "text-indigo-400" : "text-indigo-600"}>
                           {formatCurrency(Math.round(adminStats.avgTransactionValue || 0))}
                         </span>
                       </div>
                     </div>
                   </div>
                   <div>
-                    <h3 className="mb-4 text-lg font-semibold text-slate-900">User Engagement</h3>
+                    <h3 className={`mb-4 text-lg font-semibold ${
+                      darkMode ? "text-white" : "text-slate-900"
+                    }`}>User Engagement</h3>
                     <div className="space-y-2">
                       <div className="flex justify-between text-sm">
-                        <span className="text-slate-600">Active Rate</span>
-                        <span className="font-semibold text-slate-900">
+                        <span className={darkMode ? "text-slate-400" : "text-slate-600"}>Active Rate</span>
+                        <span className={`font-semibold ${
+                          darkMode ? "text-white" : "text-slate-900"
+                        }`}>
                           {adminStats.totalUsers > 0 
                             ? Math.round((adminStats.activeUsers / adminStats.totalUsers) * 100) 
                             : 0}%
                         </span>
                       </div>
                       <div className="flex justify-between text-sm">
-                        <span className="text-slate-600">Avg Transactions/User</span>
-                        <span className="font-semibold text-slate-900">
+                        <span className={darkMode ? "text-slate-400" : "text-slate-600"}>Avg Transactions/User</span>
+                        <span className={`font-semibold ${
+                          darkMode ? "text-white" : "text-slate-900"
+                        }`}>
                           {adminStats.totalUsers > 0 
                             ? Math.round(adminStats.totalTransactions / adminStats.totalUsers) 
                             : 0}
@@ -2166,25 +2718,41 @@ const runningEntries = useMemo(() => {
                 </div>
 
                 {/* Financial Overview - Not in Cards */}
-                <div className="rounded-2xl bg-white p-6 shadow-soft">
-                  <h3 className="mb-4 text-lg font-semibold text-slate-900">Financial Overview</h3>
+                <div className={`rounded-2xl p-6 shadow-soft ${
+                  darkMode ? "bg-slate-800" : "bg-white"
+                }`}>
+                  <h3 className={`mb-4 text-lg font-semibold ${
+                    darkMode ? "text-white" : "text-slate-900"
+                  }`}>Financial Overview</h3>
                   <div className="grid gap-4 sm:grid-cols-3">
                     <div>
-                      <p className="text-sm text-slate-600">Total Income</p>
-                      <p className="mt-1 text-xl font-semibold text-emerald-600">
+                      <p className={`text-sm ${
+                        darkMode ? "text-slate-400" : "text-slate-600"
+                      }`}>Total Income</p>
+                      <p className={`mt-1 text-xl font-semibold ${
+                        darkMode ? "text-emerald-400" : "text-emerald-600"
+                      }`}>
                         {formatCurrency(adminStats.totalIncome || 0)}
                       </p>
                     </div>
                     <div>
-                      <p className="text-sm text-slate-600">Total Expense</p>
-                      <p className="mt-1 text-xl font-semibold text-rose-600">
+                      <p className={`text-sm ${
+                        darkMode ? "text-slate-400" : "text-slate-600"
+                      }`}>Total Expense</p>
+                      <p className={`mt-1 text-xl font-semibold ${
+                        darkMode ? "text-rose-400" : "text-rose-600"
+                      }`}>
                         {formatCurrency(adminStats.totalExpense || 0)}
                       </p>
                     </div>
                     <div>
-                      <p className="text-sm text-slate-600">Total Balance</p>
+                      <p className={`text-sm ${
+                        darkMode ? "text-slate-400" : "text-slate-600"
+                      }`}>Total Balance</p>
                       <p className={`mt-1 text-xl font-semibold ${
-                        (adminStats.totalBalance || 0) >= 0 ? 'text-emerald-600' : 'text-rose-600'
+                        (adminStats.totalBalance || 0) >= 0 
+                          ? darkMode ? 'text-emerald-400' : 'text-emerald-600'
+                          : darkMode ? 'text-rose-400' : 'text-rose-600'
                       }`}>
                         {formatCurrency(adminStats.totalBalance || 0)}
                       </p>
@@ -2193,10 +2761,14 @@ const runningEntries = useMemo(() => {
                 </div>
 
                 {/* Min/Max Statistics */}
-                <div className="grid gap-6 rounded-2xl bg-white p-6 shadow-soft sm:grid-cols-3">
+                <div className={`grid gap-6 rounded-2xl p-6 shadow-soft sm:grid-cols-3 ${
+                  darkMode ? "bg-slate-800" : "bg-white"
+                }`}>
                   {/* Income Min/Max */}
                   <div>
-                    <h3 className="mb-4 text-lg font-semibold text-slate-900">Pemasukan</h3>
+                    <h3 className={`mb-4 text-lg font-semibold ${
+                      darkMode ? "text-white" : "text-slate-900"
+                    }`}>Pemasukan</h3>
                     <div className="space-y-3">
                       {adminStats.maxIncome && (
                         <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
@@ -2216,16 +2788,26 @@ const runningEntries = useMemo(() => {
                         </div>
                       )}
                       {adminStats.minIncome && (
-                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                          <p className="text-xs text-slate-700">
+                        <div className={`rounded-lg border p-3 ${
+                          darkMode 
+                            ? "border-slate-700 bg-slate-700/50" 
+                            : "border-slate-200 bg-slate-50"
+                        }`}>
+                          <p className={`text-xs ${
+                            darkMode ? "text-slate-400" : "text-slate-700"
+                          }`}>
                             Terendah {adminStats.minIncome.count > 1 && `(${adminStats.minIncome.count} user)`}
                           </p>
-                          <p className="mt-1 text-sm font-semibold text-slate-900">
+                          <p className={`mt-1 text-sm font-semibold ${
+                            darkMode ? "text-white" : "text-slate-900"
+                          }`}>
                             {formatCurrency(adminStats.minIncome.amount)}
                           </p>
                           <div className="mt-2 space-y-1">
                             {adminStats.minIncome.users.map((u, idx) => (
-                              <p key={idx} className="text-xs text-slate-600">
+                              <p key={idx} className={`text-xs ${
+                                darkMode ? "text-slate-400" : "text-slate-600"
+                              }`}>
                                 {u.name}
                               </p>
                             ))}
@@ -2237,7 +2819,9 @@ const runningEntries = useMemo(() => {
 
                   {/* Expense Min/Max */}
                   <div>
-                    <h3 className="mb-4 text-lg font-semibold text-slate-900">Pengeluaran</h3>
+                    <h3 className={`mb-4 text-lg font-semibold ${
+                      darkMode ? "text-white" : "text-slate-900"
+                    }`}>Pengeluaran</h3>
                     <div className="space-y-3">
                       {adminStats.maxExpense && (
                         <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
@@ -2257,16 +2841,26 @@ const runningEntries = useMemo(() => {
                         </div>
                       )}
                       {adminStats.minExpense && (
-                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                          <p className="text-xs text-slate-700">
+                        <div className={`rounded-lg border p-3 ${
+                          darkMode 
+                            ? "border-slate-700 bg-slate-700/50" 
+                            : "border-slate-200 bg-slate-50"
+                        }`}>
+                          <p className={`text-xs ${
+                            darkMode ? "text-slate-400" : "text-slate-700"
+                          }`}>
                             Terendah {adminStats.minExpense.count > 1 && `(${adminStats.minExpense.count} user)`}
                           </p>
-                          <p className="mt-1 text-sm font-semibold text-slate-900">
+                          <p className={`mt-1 text-sm font-semibold ${
+                            darkMode ? "text-white" : "text-slate-900"
+                          }`}>
                             {formatCurrency(adminStats.minExpense.amount)}
                           </p>
                           <div className="mt-2 space-y-1">
                             {adminStats.minExpense.users.map((u, idx) => (
-                              <p key={idx} className="text-xs text-slate-600">
+                              <p key={idx} className={`text-xs ${
+                                darkMode ? "text-slate-400" : "text-slate-600"
+                              }`}>
                                 {u.name}
                               </p>
                             ))}
@@ -2278,19 +2872,31 @@ const runningEntries = useMemo(() => {
 
                   {/* Balance Min/Max */}
                   <div>
-                    <h3 className="mb-4 text-lg font-semibold text-slate-900">Saldo</h3>
+                    <h3 className={`mb-4 text-lg font-semibold ${
+                      darkMode ? "text-white" : "text-slate-900"
+                    }`}>Saldo</h3>
                     <div className="space-y-3">
                       {adminStats.maxBalance && (
-                        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-                          <p className="text-xs text-emerald-700">
+                        <div className={`rounded-lg border p-3 ${
+                          darkMode 
+                            ? "border-emerald-800 bg-emerald-900/20" 
+                            : "border-emerald-200 bg-emerald-50"
+                        }`}>
+                          <p className={`text-xs ${
+                            darkMode ? "text-emerald-400" : "text-emerald-700"
+                          }`}>
                             Tertinggi {adminStats.maxBalance.count > 1 && `(${adminStats.maxBalance.count} user)`}
                           </p>
-                          <p className="mt-1 text-sm font-semibold text-emerald-900">
+                          <p className={`mt-1 text-sm font-semibold ${
+                            darkMode ? "text-emerald-300" : "text-emerald-900"
+                          }`}>
                             {formatCurrency(adminStats.maxBalance.amount)}
                           </p>
                           <div className="mt-2 space-y-1">
                             {adminStats.maxBalance.users.map((u, idx) => (
-                              <p key={idx} className="text-xs text-emerald-600">
+                              <p key={idx} className={`text-xs ${
+                                darkMode ? "text-emerald-400" : "text-emerald-600"
+                              }`}>
                                 {u.name}
                               </p>
                             ))}
@@ -2298,16 +2904,26 @@ const runningEntries = useMemo(() => {
                         </div>
                       )}
                       {adminStats.minBalance && (
-                        <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
-                          <p className="text-xs text-rose-700">
+                        <div className={`rounded-lg border p-3 ${
+                          darkMode 
+                            ? "border-rose-800 bg-rose-900/20" 
+                            : "border-rose-200 bg-rose-50"
+                        }`}>
+                          <p className={`text-xs ${
+                            darkMode ? "text-rose-400" : "text-rose-700"
+                          }`}>
                             Terendah {adminStats.minBalance.count > 1 && `(${adminStats.minBalance.count} user)`}
                           </p>
-                          <p className="mt-1 text-sm font-semibold text-rose-900">
+                          <p className={`mt-1 text-sm font-semibold ${
+                            darkMode ? "text-rose-300" : "text-rose-900"
+                          }`}>
                             {formatCurrency(adminStats.minBalance.amount)}
                           </p>
                           <div className="mt-2 space-y-1">
                             {adminStats.minBalance.users.map((u, idx) => (
-                              <p key={idx} className="text-xs text-rose-600">
+                              <p key={idx} className={`text-xs ${
+                                darkMode ? "text-rose-400" : "text-rose-600"
+                              }`}>
                                 {u.name}
                               </p>
                             ))}
@@ -2319,139 +2935,351 @@ const runningEntries = useMemo(() => {
                 </div>
 
                 {/* Growth Metrics */}
-                <div className="grid gap-6 rounded-2xl bg-white p-6 shadow-soft sm:grid-cols-2">
+                <div className={`grid gap-6 rounded-2xl p-6 shadow-soft sm:grid-cols-2 ${
+                  darkMode ? "bg-slate-800" : "bg-white"
+                }`}>
                   <div>
-                    <h3 className="mb-4 text-lg font-semibold text-slate-900">New Users</h3>
+                    <h3 className={`mb-4 text-lg font-semibold ${
+                      darkMode ? "text-white" : "text-slate-900"
+                    }`}>New Users</h3>
                     <div className="space-y-2">
                       <div className="flex justify-between text-sm">
-                        <span className="text-slate-600">Today</span>
-                        <span className="font-semibold text-slate-900">{adminStats.newUsers?.today || 0}</span>
+                        <span className={darkMode ? "text-slate-400" : "text-slate-600"}>Today</span>
+                        <span className={`font-semibold ${
+                          darkMode ? "text-white" : "text-slate-900"
+                        }`}>{adminStats.newUsers?.today || 0}</span>
                       </div>
                       <div className="flex justify-between text-sm">
-                        <span className="text-slate-600">This Week</span>
-                        <span className="font-semibold text-slate-900">{adminStats.newUsers?.thisWeek || 0}</span>
+                        <span className={darkMode ? "text-slate-400" : "text-slate-600"}>This Week</span>
+                        <span className={`font-semibold ${
+                          darkMode ? "text-white" : "text-slate-900"
+                        }`}>{adminStats.newUsers?.thisWeek || 0}</span>
                       </div>
                       <div className="flex justify-between text-sm">
-                        <span className="text-slate-600">This Month</span>
-                        <span className="font-semibold text-slate-900">{adminStats.newUsers?.thisMonth || 0}</span>
+                        <span className={darkMode ? "text-slate-400" : "text-slate-600"}>This Month</span>
+                        <span className={`font-semibold ${
+                          darkMode ? "text-white" : "text-slate-900"
+                        }`}>{adminStats.newUsers?.thisMonth || 0}</span>
                       </div>
                     </div>
                   </div>
                   <div>
-                    <h3 className="mb-4 text-lg font-semibold text-slate-900">New Transactions</h3>
+                    <h3 className={`mb-4 text-lg font-semibold ${
+                      darkMode ? "text-white" : "text-slate-900"
+                    }`}>New Transactions</h3>
                     <div className="space-y-2">
                       <div className="flex justify-between text-sm">
-                        <span className="text-slate-600">Today</span>
-                        <span className="font-semibold text-slate-900">{adminStats.newTransactions?.today || 0}</span>
+                        <span className={darkMode ? "text-slate-400" : "text-slate-600"}>Today</span>
+                        <span className={`font-semibold ${
+                          darkMode ? "text-white" : "text-slate-900"
+                        }`}>{adminStats.newTransactions?.today || 0}</span>
                       </div>
                       <div className="flex justify-between text-sm">
-                        <span className="text-slate-600">This Week</span>
-                        <span className="font-semibold text-slate-900">{adminStats.newTransactions?.thisWeek || 0}</span>
+                        <span className={darkMode ? "text-slate-400" : "text-slate-600"}>This Week</span>
+                        <span className={`font-semibold ${
+                          darkMode ? "text-white" : "text-slate-900"
+                        }`}>{adminStats.newTransactions?.thisWeek || 0}</span>
                       </div>
                       <div className="flex justify-between text-sm">
-                        <span className="text-slate-600">This Month</span>
-                        <span className="font-semibold text-slate-900">{adminStats.newTransactions?.thisMonth || 0}</span>
+                        <span className={darkMode ? "text-slate-400" : "text-slate-600"}>This Month</span>
+                        <span className={`font-semibold ${
+                          darkMode ? "text-white" : "text-slate-900"
+                        }`}>{adminStats.newTransactions?.thisMonth || 0}</span>
                       </div>
                     </div>
                   </div>
                 </div>
               </div>
-              )
+              ) : null
             )}
 
-            {/* Admin Users Tab */}
+            {/* Admin Users & Admins Tab - Combined */}
             {adminTab === "users" && (
-              <div className="relative rounded-2xl bg-white shadow-soft">
-                {adminLoading && adminUsers.length === 0 && (
-                  <LoadingOverlay message="Memuat data users..." />
-                )}
-                <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-slate-100">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                          Name
-                        </th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                          Email
-                        </th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                          Role
-                        </th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                          Transactions
-                        </th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                          Last Login
-                        </th>
-                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                          Created
-                        </th>
-                        <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
-                          Actions
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                      {adminUsers.map((u) => (
-                        <tr key={u.id}>
-                          <td className="px-4 py-3 text-sm font-semibold text-slate-900">
-                            {u.name}
-                          </td>
-                          <td className="px-4 py-3 text-sm text-slate-600">{u.email}</td>
-                          <td className="px-4 py-3">
-                            <span
-                              className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${
-                                u.role === "admin"
-                                  ? "bg-purple-100 text-purple-700"
-                                  : "bg-slate-100 text-slate-700"
-                              }`}
-                            >
-                              {u.role || "user"}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 text-sm text-slate-600">
-                            {u.transaction_count || 0}
-                          </td>
-                          <td className="px-4 py-3 text-sm text-slate-500">
-                            {u.last_login_at 
-                              ? new Date(u.last_login_at).toLocaleDateString("id-ID", {
-                                  day: "numeric",
-                                  month: "short",
-                                  year: "numeric",
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                  timeZone: settings.timezone || "Asia/Jakarta"
-                                })
-                              : "Never"}
-                          </td>
-                          <td className="px-4 py-3 text-sm text-slate-500">
-                            {new Date(u.created_at).toLocaleDateString("id-ID", {
-                              timeZone: settings.timezone || "Asia/Jakarta"
-                            })}
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex justify-center gap-2">
-                              <button
-                                onClick={() => handleEditUser(u)}
-                                className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-600 transition hover:bg-indigo-100"
-                              >
-                                Edit
-                              </button>
-                              {u.id !== user.id && (
-                                <button
-                                  onClick={() => handleDeleteUser(u.id)}
-                                  className="rounded-full bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-600 transition hover:bg-rose-100"
-                                >
-                                  Delete
-                                </button>
-                              )}
-                            </div>
-                          </td>
+              <div className="space-y-6">
+                {/* Users Section */}
+                <div className={`relative rounded-2xl shadow-soft ${
+                  darkMode ? "bg-slate-800" : "bg-white"
+                }`}>
+                  {adminLoading && adminUsers.length === 0 && (
+                    <LoadingOverlay message="Memuat data users..." darkMode={darkMode} />
+                  )}
+                  <div className={`border-b p-4 ${
+                    darkMode ? "border-slate-700" : "border-slate-200"
+                  }`}>
+                    <div className="flex items-center justify-between">
+                      <h2 className={`text-lg font-semibold ${
+                        darkMode ? "text-white" : "text-slate-900"
+                      }`}>
+                        Daftar Users ({adminUsers.filter(u => u.role !== 'admin').length})
+                      </h2>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCreateUserForm({ name: "", email: "", password: "", role: "user" });
+                          setIsCreateUserModalOpen(true);
+                        }}
+                        className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-700"
+                      >
+                        + Tambah User
+                      </button>
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className={`min-w-full divide-y ${
+                      darkMode ? "divide-slate-700" : "divide-slate-100"
+                    }`}>
+                      <thead className={darkMode ? "bg-slate-700" : "bg-slate-50"}>
+                        <tr>
+                          <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide ${
+                            darkMode ? "text-slate-300" : "text-slate-500"
+                          }`}>
+                            Name
+                          </th>
+                          <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide ${
+                            darkMode ? "text-slate-300" : "text-slate-500"
+                          }`}>
+                            Email
+                          </th>
+                          <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide ${
+                            darkMode ? "text-slate-300" : "text-slate-500"
+                          }`}>
+                            Transactions
+                          </th>
+                          <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide ${
+                            darkMode ? "text-slate-300" : "text-slate-500"
+                          }`}>
+                            Last Login
+                          </th>
+                          <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide ${
+                            darkMode ? "text-slate-300" : "text-slate-500"
+                          }`}>
+                            Created
+                          </th>
+                          <th className={`px-4 py-3 text-center text-xs font-semibold uppercase tracking-wide ${
+                            darkMode ? "text-slate-300" : "text-slate-500"
+                          }`}>
+                            Actions
+                          </th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody className={`divide-y ${
+                        darkMode ? "divide-slate-700 bg-slate-800" : "divide-slate-100 bg-white"
+                      }`}>
+                        {adminUsers.filter(u => u.role !== 'admin').length === 0 ? (
+                          <tr>
+                            <td colSpan="6" className={`px-4 py-8 text-center text-sm ${
+                              darkMode ? "text-slate-400" : "text-slate-500"
+                            }`}>
+                              Belum ada user.
+                            </td>
+                          </tr>
+                        ) : (
+                          adminUsers.filter(u => u.role !== 'admin').map((u) => (
+                            <tr key={u.id} className={darkMode ? "hover:bg-slate-700/50" : "hover:bg-slate-50"}>
+                              <td className={`px-4 py-3 text-sm font-semibold ${
+                                darkMode ? "text-white" : "text-slate-900"
+                              }`}>
+                                {u.name}
+                              </td>
+                              <td className={`px-4 py-3 text-sm ${
+                                darkMode ? "text-slate-300" : "text-slate-600"
+                              }`}>{u.email}</td>
+                              <td className={`px-4 py-3 text-sm ${
+                                darkMode ? "text-slate-300" : "text-slate-600"
+                              }`}>
+                                {u.transaction_count || 0}
+                              </td>
+                              <td className={`px-4 py-3 text-sm ${
+                                darkMode ? "text-slate-400" : "text-slate-500"
+                              }`}>
+                                {u.last_login_at 
+                                  ? new Date(u.last_login_at).toLocaleDateString("id-ID", {
+                                      day: "numeric",
+                                      month: "short",
+                                      year: "numeric",
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                      timeZone: settings.timezone || "Asia/Jakarta"
+                                    })
+                                  : "Never"}
+                              </td>
+                              <td className="px-4 py-3 text-sm text-slate-500">
+                                {new Date(u.created_at).toLocaleDateString("id-ID", {
+                                  timeZone: settings.timezone || "Asia/Jakarta"
+                                })}
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="flex justify-center gap-2">
+                                  <button
+                                    onClick={() => handleEditUser(u)}
+                                    className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-600 transition hover:bg-indigo-100"
+                                  >
+                                    Edit
+                                  </button>
+                                  {u.id !== user.id && (
+                                    <button
+                                      onClick={() => handleDeleteUser(u.id)}
+                                      className="rounded-full bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-600 transition hover:bg-rose-100"
+                                    >
+                                      Delete
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Admins Section */}
+                <div className={`relative rounded-2xl shadow-soft ${
+                  darkMode ? "bg-slate-800" : "bg-white"
+                }`}>
+                  {adminLoading && adminUsers.length === 0 && (
+                    <LoadingOverlay message="Memuat data admins..." darkMode={darkMode} />
+                  )}
+                  <div className={`border-b p-4 ${
+                    darkMode ? "border-slate-700" : "border-slate-200"
+                  }`}>
+                    <div className="flex items-center justify-between">
+                      <h2 className={`text-lg font-semibold ${
+                        darkMode ? "text-white" : "text-slate-900"
+                      }`}>
+                        Daftar Admins ({adminUsers.filter(u => u.role === 'admin').length})
+                      </h2>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCreateUserForm({ name: "", email: "", password: "", role: "admin" });
+                          setIsCreateUserModalOpen(true);
+                        }}
+                        className="rounded-xl bg-purple-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-purple-700"
+                      >
+                        + Tambah Admin
+                      </button>
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className={`min-w-full divide-y ${
+                      darkMode ? "divide-slate-700" : "divide-slate-100"
+                    }`}>
+                      <thead className={darkMode ? "bg-slate-700" : "bg-slate-50"}>
+                        <tr>
+                          <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide ${
+                            darkMode ? "text-slate-300" : "text-slate-500"
+                          }`}>
+                            Name
+                          </th>
+                          <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide ${
+                            darkMode ? "text-slate-300" : "text-slate-500"
+                          }`}>
+                            Email
+                          </th>
+                          <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide ${
+                            darkMode ? "text-slate-300" : "text-slate-500"
+                          }`}>
+                            Transactions
+                          </th>
+                          <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide ${
+                            darkMode ? "text-slate-300" : "text-slate-500"
+                          }`}>
+                            Last Login
+                          </th>
+                          <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide ${
+                            darkMode ? "text-slate-300" : "text-slate-500"
+                          }`}>
+                            Created
+                          </th>
+                          <th className={`px-4 py-3 text-center text-xs font-semibold uppercase tracking-wide ${
+                            darkMode ? "text-slate-300" : "text-slate-500"
+                          }`}>
+                            Actions
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className={`divide-y ${
+                        darkMode ? "divide-slate-700 bg-slate-800" : "divide-slate-100 bg-white"
+                      }`}>
+                        {adminUsers.filter(u => u.role === 'admin').length === 0 ? (
+                          <tr>
+                            <td colSpan="6" className={`px-4 py-8 text-center text-sm ${
+                              darkMode ? "text-slate-400" : "text-slate-500"
+                            }`}>
+                              Belum ada admin.
+                            </td>
+                          </tr>
+                        ) : (
+                          adminUsers.filter(u => u.role === 'admin').map((u) => (
+                            <tr key={u.id} className={darkMode ? "hover:bg-slate-700/50" : "hover:bg-slate-50"}>
+                              <td className={`px-4 py-3 text-sm font-semibold ${
+                                darkMode ? "text-white" : "text-slate-900"
+                              }`}>
+                                {u.name}
+                              </td>
+                              <td className={`px-4 py-3 text-sm ${
+                                darkMode ? "text-slate-300" : "text-slate-600"
+                              }`}>{u.email}</td>
+                              <td className={`px-4 py-3 text-sm ${
+                                darkMode ? "text-slate-300" : "text-slate-600"
+                              }`}>
+                                {u.transaction_count || 0}
+                              </td>
+                              <td className={`px-4 py-3 text-sm ${
+                                darkMode ? "text-slate-400" : "text-slate-500"
+                              }`}>
+                                {u.last_login_at 
+                                  ? new Date(u.last_login_at).toLocaleDateString("id-ID", {
+                                      day: "numeric",
+                                      month: "short",
+                                      year: "numeric",
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                      timeZone: settings.timezone || "Asia/Jakarta"
+                                    })
+                                  : "Never"}
+                              </td>
+                              <td className={`px-4 py-3 text-sm ${
+                                darkMode ? "text-slate-400" : "text-slate-500"
+                              }`}>
+                                {new Date(u.created_at).toLocaleDateString("id-ID", {
+                                  timeZone: settings.timezone || "Asia/Jakarta"
+                                })}
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="flex justify-center gap-2">
+                                  <button
+                                    onClick={() => handleEditUser(u)}
+                                    className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
+                                      darkMode
+                                        ? "bg-indigo-900/30 text-indigo-400 hover:bg-indigo-900/50"
+                                        : "bg-indigo-50 text-indigo-600 hover:bg-indigo-100"
+                                    }`}
+                                  >
+                                    Edit
+                                  </button>
+                                  {u.id !== user.id && (
+                                    <button
+                                      onClick={() => handleDeleteUser(u.id)}
+                                      className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
+                                        darkMode
+                                          ? "bg-rose-900/30 text-rose-400 hover:bg-rose-900/50"
+                                          : "bg-rose-50 text-rose-600 hover:bg-rose-100"
+                                      }`}
+                                  >
+                                    Delete
+                                  </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
             )}
@@ -2460,7 +3288,7 @@ const runningEntries = useMemo(() => {
             {adminTab === "transactions" && (
               <div className="relative space-y-4">
                 {adminLoading && adminTransactions.length === 0 && (
-                  <LoadingOverlay message="Memuat data transaksi..." />
+                  <LoadingOverlay message="Memuat data transaksi..." darkMode={darkMode} />
                 )}
                 {(() => {
                   // Group transactions by user
@@ -2494,7 +3322,9 @@ const runningEntries = useMemo(() => {
                     const balance = userGroup.total_income - userGroup.total_expense;
 
                     return (
-                      <div key={userGroup.user_id} className="rounded-2xl border border-slate-200 bg-white shadow-soft">
+                      <div key={userGroup.user_id} className={`rounded-2xl border shadow-soft ${
+                        darkMode ? "border-slate-700 bg-slate-800" : "border-slate-200 bg-white"
+                      }`}>
                         {/* User Header - Clickable */}
                         <button
                           type="button"
@@ -2507,37 +3337,55 @@ const runningEntries = useMemo(() => {
                             }
                             setExpandedUsers(newExpanded);
                           }}
-                          className="w-full px-6 py-4 text-left transition hover:bg-slate-50"
+                          className={`w-full px-6 py-4 text-left transition ${
+                            darkMode ? "hover:bg-slate-700" : "hover:bg-slate-50"
+                          }`}
                         >
                           <div className="flex items-center justify-between">
                             <div className="flex-1">
                               <div className="flex items-center gap-3">
-                                <h3 className="text-lg font-semibold text-slate-900">
+                                <h3 className={`text-lg font-semibold ${
+                                  darkMode ? "text-white" : "text-slate-900"
+                                }`}>
                                   {userGroup.user_name}
                                 </h3>
-                                <span className="text-sm text-slate-500">
+                                <span className={`text-sm ${
+                                  darkMode ? "text-slate-400" : "text-slate-500"
+                                }`}>
                                   ({userGroup.user_email})
                                 </span>
                               </div>
-                              <div className="mt-2 flex gap-4 text-sm text-slate-600">
+                              <div className={`mt-2 flex gap-4 text-sm ${
+                                darkMode ? "text-slate-300" : "text-slate-600"
+                              }`}>
                                 <span>
                                   <span className="font-semibold">{userGroup.transactions.length}</span> transaksi
                                 </span>
                                 <span>
-                                  Income: <span className="font-semibold text-emerald-600">{formatCurrency(userGroup.total_income)}</span>
+                                  Income: <span className={`font-semibold ${
+                                    darkMode ? "text-emerald-400" : "text-emerald-600"
+                                  }`}>{formatCurrency(userGroup.total_income)}</span>
                                 </span>
                                 <span>
-                                  Expense: <span className="font-semibold text-rose-600">{formatCurrency(userGroup.total_expense)}</span>
+                                  Expense: <span className={`font-semibold ${
+                                    darkMode ? "text-rose-400" : "text-rose-600"
+                                  }`}>{formatCurrency(userGroup.total_expense)}</span>
                                 </span>
                                 <span>
-                                  Balance: <span className={`font-semibold ${balance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                  Balance: <span className={`font-semibold ${
+                                    balance >= 0 
+                                      ? darkMode ? 'text-emerald-400' : 'text-emerald-600'
+                                      : darkMode ? 'text-rose-400' : 'text-rose-600'
+                                  }`}>
                                     {formatCurrency(balance)}
                                   </span>
                                 </span>
                               </div>
                             </div>
                             <svg
-                              className={`h-5 w-5 text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                              className={`h-5 w-5 transition-transform ${
+                                darkMode ? "text-slate-400" : "text-slate-400"
+                              } ${isExpanded ? 'rotate-180' : ''}`}
                               fill="none"
                               stroke="currentColor"
                               viewBox="0 0 24 24"
@@ -2554,42 +3402,64 @@ const runningEntries = useMemo(() => {
 
                         {/* Transactions List - Collapsible with Scroll */}
                         {isExpanded && (
-                          <div className="border-t border-slate-200">
+                          <div className={`border-t ${
+                            darkMode ? "border-slate-700" : "border-slate-200"
+                          }`}>
                             <div className="max-h-[400px] overflow-y-auto">
                               <div className="overflow-x-auto">
-                                <table className="min-w-full divide-y divide-slate-100">
-                                  <thead className="sticky top-0 bg-slate-50 z-10">
+                                <table className={`min-w-full divide-y ${
+                                  darkMode ? "divide-slate-700" : "divide-slate-100"
+                                }`}>
+                                  <thead className={`sticky top-0 z-10 ${
+                                    darkMode ? "bg-slate-700" : "bg-slate-50"
+                                  }`}>
                                     <tr>
-                                      <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                      <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide ${
+                                        darkMode ? "text-slate-300" : "text-slate-500"
+                                      }`}>
                                         Date
                                       </th>
-                                      <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                      <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide ${
+                                        darkMode ? "text-slate-300" : "text-slate-500"
+                                      }`}>
                                         Description
                                       </th>
-                                      <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                      <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide ${
+                                        darkMode ? "text-slate-300" : "text-slate-500"
+                                      }`}>
                                         Type
                                       </th>
-                                      <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                      <th className={`px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide ${
+                                        darkMode ? "text-slate-300" : "text-slate-500"
+                                      }`}>
                                         Amount
                                       </th>
                                     </tr>
                                   </thead>
-                                  <tbody className="divide-y divide-slate-100 bg-white">
+                                  <tbody className={`divide-y ${
+                                    darkMode ? "divide-slate-700 bg-slate-800" : "divide-slate-100 bg-white"
+                                  }`}>
                                     {userGroup.transactions
                                       .sort((a, b) => new Date(b.date) - new Date(a.date))
                                       .map((t) => (
-                                        <tr key={t.id}>
-                                          <td className="px-4 py-3 text-sm text-slate-600">
+                                        <tr key={t.id} className={darkMode ? "hover:bg-slate-700/50" : "hover:bg-slate-50"}>
+                                          <td className={`px-4 py-3 text-sm ${
+                                            darkMode ? "text-slate-300" : "text-slate-600"
+                                          }`}>
                                             {formatDate(t.date, settings.timezone || "Asia/Jakarta")}
                                           </td>
-                                          <td className="px-4 py-3 text-sm text-slate-600">{t.description}</td>
+                                          <td className={`px-4 py-3 text-sm ${
+                                            darkMode ? "text-slate-300" : "text-slate-600"
+                                          }`}>{t.description}</td>
                                           <td className="px-4 py-3">
                                             <Badge
                                               label={t.type}
                                               variant={t.type}
                                             />
                                           </td>
-                                          <td className="px-4 py-3 text-right text-sm font-semibold text-slate-900">
+                                          <td className={`px-4 py-3 text-right text-sm font-semibold ${
+                                            darkMode ? "text-white" : "text-slate-900"
+                                          }`}>
                                             {formatCurrency(t.amount)}
                                           </td>
                                         </tr>
@@ -2606,11 +3476,17 @@ const runningEntries = useMemo(() => {
                 })()}
 
                 {adminTransactions.length === 0 && (
-                  <div className="rounded-2xl border border-dashed border-slate-200 bg-white py-12 text-center">
-                    <p className="text-base font-semibold text-slate-800">
+                  <div className={`rounded-2xl border border-dashed py-12 text-center ${
+                    darkMode ? "border-slate-700 bg-slate-800" : "border-slate-200 bg-white"
+                  }`}>
+                    <p className={`text-base font-semibold ${
+                      darkMode ? "text-slate-200" : "text-slate-800"
+                    }`}>
                       Belum ada transaksi
                     </p>
-                    <p className="mt-1 text-sm text-slate-500">
+                    <p className={`mt-1 text-sm ${
+                      darkMode ? "text-slate-400" : "text-slate-500"
+                    }`}>
                       Transaksi akan muncul di sini setelah user membuat transaksi.
                     </p>
                   </div>
@@ -2673,37 +3549,488 @@ const runningEntries = useMemo(() => {
               </div>
             </section>
 
+            {/* Charts Section */}
+            {entries.length > 0 && (
+              <section className="grid gap-6 lg:grid-cols-2">
+                {/* Line Chart - Balance Trend */}
+                <div className={`rounded-3xl p-6 shadow-soft transition-colors ${
+                  darkMode ? "bg-slate-800" : "bg-white"
+                }`}>
+                  <div className="mb-4 flex items-center justify-between">
+                    <div>
+                      <p className={`text-sm font-semibold uppercase tracking-wide ${
+                        darkMode ? "text-slate-400" : "text-slate-600"
+                      }`}>
+                        Perkembangan Saldo
+                      </p>
+                      <h3 className={`text-xl font-semibold ${
+                        darkMode ? "text-white" : "text-slate-900"
+                      }`}>
+                        {chartPeriod === "daily" ? "Harian" : "Bulanan"}
+                      </h3>
+                    </div>
+                    <select
+                      value={chartPeriod}
+                      onChange={(e) => setChartPeriod(e.target.value)}
+                      className={getInputClasses(darkMode)}
+                    >
+                      <option value="daily">Harian</option>
+                      <option value="monthly">Bulanan</option>
+                    </select>
+                  </div>
+                  <ResponsiveContainer width="100%" height={250}>
+                    <LineChart data={chartPeriod === "daily" ? dailyBalanceData : monthlyBalanceData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={darkMode ? "#475569" : "#e2e8f0"} />
+                      <XAxis 
+                        dataKey={chartPeriod === "daily" ? "date" : "month"} 
+                        stroke={darkMode ? "#94a3b8" : "#64748b"}
+                        tick={{ fill: darkMode ? "#94a3b8" : "#64748b", fontSize: 12 }}
+                      />
+                      <YAxis 
+                        stroke={darkMode ? "#94a3b8" : "#64748b"}
+                        tick={{ fill: darkMode ? "#94a3b8" : "#64748b", fontSize: 12 }}
+                        tickFormatter={(value) => `Rp${(value / 1000).toFixed(0)}k`}
+                      />
+                      <Tooltip 
+                        contentStyle={{
+                          backgroundColor: darkMode ? "#1e293b" : "#fff",
+                          border: `1px solid ${darkMode ? "#475569" : "#e2e8f0"}`,
+                          borderRadius: "12px",
+                          color: darkMode ? "#fff" : "#0f172a"
+                        }}
+                        formatter={(value) => formatCurrency(value)}
+                      />
+                      <Line 
+                        type="monotone" 
+                        dataKey="balance" 
+                        stroke="#6366f1" 
+                        strokeWidth={2}
+                        dot={{ fill: "#6366f1", r: 4 }}
+                        activeDot={{ r: 6 }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* Bar Chart - Income vs Expense */}
+                <div className={`rounded-3xl p-6 shadow-soft transition-colors ${
+                  darkMode ? "bg-slate-800" : "bg-white"
+                }`}>
+                  <div className="mb-4">
+                    <p className={`text-sm font-semibold uppercase tracking-wide ${
+                      darkMode ? "text-slate-400" : "text-slate-600"
+                    }`}>
+                      Pemasukan vs Pengeluaran
+                    </p>
+                    <h3 className={`text-xl font-semibold ${
+                      darkMode ? "text-white" : "text-slate-900"
+                    }`}>
+                      Perbandingan Bulanan
+                    </h3>
+                  </div>
+                  <ResponsiveContainer width="100%" height={250}>
+                    <BarChart data={incomeExpenseData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={darkMode ? "#475569" : "#e2e8f0"} />
+                      <XAxis 
+                        dataKey="month" 
+                        stroke={darkMode ? "#94a3b8" : "#64748b"}
+                        tick={{ fill: darkMode ? "#94a3b8" : "#64748b", fontSize: 12 }}
+                      />
+                      <YAxis 
+                        stroke={darkMode ? "#94a3b8" : "#64748b"}
+                        tick={{ fill: darkMode ? "#94a3b8" : "#64748b", fontSize: 12 }}
+                        tickFormatter={(value) => `Rp${(value / 1000).toFixed(0)}k`}
+                      />
+                      <Tooltip 
+                        contentStyle={{
+                          backgroundColor: darkMode ? "#1e293b" : "#fff",
+                          border: `1px solid ${darkMode ? "#475569" : "#e2e8f0"}`,
+                          borderRadius: "12px",
+                          color: darkMode ? "#fff" : "#0f172a"
+                        }}
+                        formatter={(value) => formatCurrency(value)}
+                      />
+                      <Legend />
+                      <Bar dataKey="income" fill="#10b981" radius={[8, 8, 0, 0]} />
+                      <Bar dataKey="expense" fill="#ef4444" radius={[8, 8, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* Pie Chart - Expense by Category */}
+                {expenseByCategory.length > 0 && (
+                  <div className={`rounded-3xl p-6 shadow-soft transition-colors ${
+                    darkMode ? "bg-slate-800" : "bg-white"
+                  }`}>
+                    <div className="mb-4">
+                      <p className={`text-sm font-semibold uppercase tracking-wide ${
+                        darkMode ? "text-slate-400" : "text-slate-600"
+                      }`}>
+                        Komposisi Pengeluaran
+                      </p>
+                      <h3 className={`text-xl font-semibold ${
+                        darkMode ? "text-white" : "text-slate-900"
+                      }`}>
+                        Berdasarkan Kategori
+                      </h3>
+                    </div>
+                    <ResponsiveContainer width="100%" height={250}>
+                      <PieChart>
+                        <Pie
+                          data={expenseByCategory}
+                          cx="50%"
+                          cy="50%"
+                          labelLine={false}
+                          label={false}
+                          outerRadius={80}
+                          fill="#8884d8"
+                          dataKey="value"
+                        >
+                          {expenseByCategory.map((entry, index) => {
+                            const colors = ["#ef4444", "#f97316", "#f59e0b", "#eab308", "#84cc16", "#22c55e", "#10b981", "#14b8a6", "#06b6d4", "#3b82f6"];
+                            return <Cell key={`cell-${index}`} fill={colors[index % colors.length]} />;
+                          })}
+                        </Pie>
+                        <Tooltip 
+                          contentStyle={{
+                            backgroundColor: darkMode ? "#1e293b" : "#fff",
+                            border: `1px solid ${darkMode ? "#475569" : "#e2e8f0"}`,
+                            borderRadius: "12px",
+                            color: darkMode ? "#fff" : "#0f172a",
+                            padding: "8px 12px"
+                          }}
+                          labelStyle={{
+                            color: darkMode ? "#cbd5e1" : "#64748b",
+                            fontWeight: "600",
+                            marginBottom: "4px"
+                          }}
+                          itemStyle={{
+                            color: darkMode ? "#fff" : "#0f172a"
+                          }}
+                          formatter={(value, name) => [formatCurrency(value), name]}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+
+                {/* Insights Section */}
+                <div className={`rounded-3xl p-6 shadow-soft transition-colors ${
+                  darkMode ? "bg-slate-800" : "bg-white"
+                }`}>
+                  <div className="mb-4">
+                    <p className={`text-sm font-semibold uppercase tracking-wide ${
+                      darkMode ? "text-slate-400" : "text-slate-500"
+                    }`}>
+                      Insight & Statistik
+                    </p>
+                    <h3 className={`text-xl font-semibold ${
+                      darkMode ? "text-white" : "text-slate-900"
+                    }`}>
+                      Analisis Keuangan
+                    </h3>
+                  </div>
+                  <div className="space-y-4">
+                    {/* Top Category */}
+                    <div className={`rounded-xl border p-4 ${
+                      darkMode 
+                        ? "border-slate-700 bg-slate-700/50" 
+                        : "border-slate-200 bg-slate-50"
+                    }`}>
+                      <p className={`text-xs font-semibold uppercase tracking-wide ${
+                        darkMode ? "text-slate-400" : "text-slate-500"
+                      }`}>
+                        Kategori Pengeluaran Terbesar Bulan Ini
+                      </p>
+                      <p className={`mt-1 text-lg font-semibold ${
+                        darkMode ? "text-white" : "text-slate-900"
+                      }`}>
+                        {insights.topCategory.name}
+                      </p>
+                      <p className={`text-sm ${
+                        darkMode ? "text-rose-400" : "text-rose-600"
+                      }`}>
+                        {formatCurrency(insights.topCategory.amount)}
+                      </p>
+                    </div>
+
+                    {/* Expense Comparison */}
+                    <div className={`rounded-xl border p-4 ${
+                      darkMode 
+                        ? "border-slate-700 bg-slate-700/50" 
+                        : "border-slate-200 bg-slate-50"
+                    }`}>
+                      <p className={`text-xs font-semibold uppercase tracking-wide ${
+                        darkMode ? "text-slate-400" : "text-slate-500"
+                      }`}>
+                        Perbandingan dengan Bulan Lalu
+                      </p>
+                      <p className={`mt-1 text-lg font-semibold ${
+                        darkMode ? "text-white" : "text-slate-900"
+                      }`}>
+                        {parseFloat(insights.expenseChange) > 0 ? "+" : ""}{insights.expenseChange}%
+                      </p>
+                      <p className={`text-sm ${
+                        darkMode ? "text-slate-400" : "text-slate-600"
+                      }`}>
+                        Bulan ini: {formatCurrency(insights.currentMonthExpenses)}
+                      </p>
+                    </div>
+
+                    {/* Top Day */}
+                    {insights.topDay.date && (
+                      <div className={`rounded-xl border p-4 ${
+                        darkMode 
+                          ? "border-slate-700 bg-slate-700/50" 
+                          : "border-slate-200 bg-slate-50"
+                      }`}>
+                        <p className={`text-xs font-semibold uppercase tracking-wide ${
+                          darkMode ? "text-slate-400" : "text-slate-500"
+                        }`}>
+                          Hari dengan Pengeluaran Terbesar
+                        </p>
+                        <p className={`mt-1 text-lg font-semibold ${
+                          darkMode ? "text-white" : "text-slate-900"
+                        }`}>
+                          {formatDate(insights.topDay.date, settings.timezone || "Asia/Jakarta")}
+                        </p>
+                        <p className={`text-sm ${
+                          darkMode ? "text-rose-400" : "text-rose-600"
+                        }`}>
+                          {formatCurrency(insights.topDay.amount)}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {/* Calendar Heatmap */}
+            {entries.length > 0 && (
+              <section className="grid gap-6">
+                <div className={`rounded-3xl p-6 shadow-soft transition-colors animate-fade-in ${
+                  darkMode ? "bg-slate-800" : "bg-white"
+                }`}>
+                  <div className="mb-4">
+                    <p className={`text-sm font-semibold uppercase tracking-wide ${
+                      darkMode ? "text-slate-400" : "text-slate-500"
+                    }`}>
+                      Aktivitas Transaksi
+                    </p>
+                    <h3 className={`text-xl font-semibold ${
+                      darkMode ? "text-white" : "text-slate-900"
+                    }`}>
+                      Calendar Heatmap
+                    </h3>
+                    <p className={`mt-1 text-sm ${
+                      darkMode ? "text-slate-400" : "text-slate-500"
+                    }`}>
+                      Intensitas transaksi per hari
+                    </p>
+                  </div>
+                  <div className="w-full">
+                    <CalendarHeatmap data={heatmapData} darkMode={darkMode} />
+                  </div>
+                </div>
+              </section>
+            )}
+
             <section className="grid gap-6">
-          <div className="rounded-3xl bg-white p-6 shadow-soft">
-            <div className="flex flex-col gap-2 pb-4 sm:flex-row sm:items-end sm:justify-between">
+          <div className={`rounded-3xl p-6 shadow-soft transition-colors ${
+            darkMode ? "bg-slate-800" : "bg-white"
+          }`}>
+            <div className="flex flex-col gap-4 pb-4 sm:flex-row sm:items-end sm:justify-between">
               <div>
-                <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+                <p className={`text-sm font-semibold uppercase tracking-wide ${
+                  darkMode ? "text-slate-400" : "text-slate-500"
+                }`}>
                   Daftar Transaksi
                 </p>
-                <h2 className="text-2xl font-semibold text-slate-900">
+                <h2 className={`text-2xl font-semibold ${
+                  darkMode ? "text-white" : "text-slate-900"
+                }`}>
                   Histori arus kas
                 </h2>
               </div>
-              <p className="text-sm text-slate-500">
+              <p className={`text-sm ${
+                darkMode ? "text-slate-400" : "text-slate-500"
+              }`}>
                 {loading
                   ? "Memuat data..."
-                  : `${entries.length} transaksi tersimpan`}
+                  : `${filteredEntries.length} dari ${entries.length} transaksi`}
               </p>
+            </div>
+
+            {/* Filters and Search */}
+            <div className={`mb-4 space-y-3 rounded-2xl border p-4 ${
+              darkMode 
+                ? "border-slate-700 bg-slate-700/50" 
+                : "border-slate-200 bg-slate-50"
+            }`}>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                {/* Search */}
+                <div className="sm:col-span-2 lg:col-span-1">
+                  <label className={`mb-1 block text-xs font-semibold ${
+                    darkMode ? "text-slate-400" : "text-slate-600"
+                  }`}>
+                    Cari Transaksi
+                  </label>
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Cari nama/deskripsi..."
+                    className={getInputClasses(darkMode)}
+                  />
+                </div>
+
+                {/* Date From */}
+                <div>
+                  <label className={`mb-1 block text-xs font-semibold ${
+                    darkMode ? "text-slate-400" : "text-slate-600"
+                  }`}>
+                    Dari Tanggal
+                  </label>
+                  <input
+                    type="date"
+                    value={filterDateFrom}
+                    onChange={(e) => setFilterDateFrom(e.target.value)}
+                    className={getInputClasses(darkMode)}
+                  />
+                </div>
+
+                {/* Date To */}
+                <div>
+                  <label className={`mb-1 block text-xs font-semibold ${
+                    darkMode ? "text-slate-400" : "text-slate-600"
+                  }`}>
+                    Sampai Tanggal
+                  </label>
+                  <input
+                    type="date"
+                    value={filterDateTo}
+                    onChange={(e) => setFilterDateTo(e.target.value)}
+                    className={getInputClasses(darkMode)}
+                  />
+                </div>
+
+                {/* Type Filter */}
+                <div>
+                  <label className={`mb-1 block text-xs font-semibold ${
+                    darkMode ? "text-slate-400" : "text-slate-600"
+                  }`}>
+                    Tipe Transaksi
+                  </label>
+                  <select
+                    value={filterType}
+                    onChange={(e) => setFilterType(e.target.value)}
+                    className={getInputClasses(darkMode)}
+                  >
+                    <option value="">Semua</option>
+                    <option value="income">Pemasukan</option>
+                    <option value="expense">Pengeluaran</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Reset Button */}
+              {(searchQuery || filterDateFrom || filterDateTo || filterType) && (
+                <button
+                  onClick={resetFilters}
+                  className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                    darkMode
+                      ? "bg-slate-600 text-white hover:bg-slate-500"
+                      : "bg-slate-200 text-slate-700 hover:bg-slate-300"
+                  }`}
+                >
+                  Reset Filter
+                </button>
+              )}
             </div>
 
             {loading ? (
               <div className="py-20 text-center">
                 <LoadingSpinner size="lg" className="mx-auto mb-3" />
-                <p className="text-sm font-medium text-slate-500">Memuat transaksi...</p>
+                <p className={`text-sm font-medium ${
+                  darkMode ? "text-slate-400" : "text-slate-500"
+                }`}>Memuat transaksi...</p>
               </div>
-            ) : runningEntries.length === 0 ? (
-              <EmptyState />
+            ) : filteredEntries.length === 0 ? (
+              <EmptyState darkMode={darkMode} />
             ) : (
               <>
+                {/* Pagination Controls - Top */}
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-center gap-2">
+                    <label className={`text-sm font-medium ${
+                      darkMode ? "text-slate-400" : "text-slate-600"
+                    }`}>
+                      Tampilkan:
+                    </label>
+                    <select
+                      value={itemsPerPage}
+                      onChange={(e) => {
+                        setItemsPerPage(Number(e.target.value));
+                        setCurrentPage(1);
+                      }}
+                      className={getInputClasses(darkMode)}
+                    >
+                      <option value={10}>10</option>
+                      <option value={25}>25</option>
+                      <option value={50}>50</option>
+                    </select>
+                    <span className={`text-sm ${
+                      darkMode ? "text-slate-400" : "text-slate-500"
+                    }`}>
+                      per halaman
+                    </span>
+                  </div>
+                  {totalPages > 1 && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                        disabled={currentPage === 1}
+                        className={`rounded-xl border px-3 py-1.5 text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed ${
+                          darkMode
+                            ? "border-slate-600 bg-slate-800 text-white hover:bg-slate-700"
+                            : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                        }`}
+                      >
+                        Sebelumnya
+                      </button>
+                      <span className={`text-sm font-medium ${
+                        darkMode ? "text-slate-400" : "text-slate-600"
+                      }`}>
+                        Halaman {currentPage} dari {totalPages}
+                      </span>
+                      <button
+                        onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                        disabled={currentPage === totalPages}
+                        className={`rounded-xl border px-3 py-1.5 text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed ${
+                          darkMode
+                            ? "border-slate-600 bg-slate-800 text-white hover:bg-slate-700"
+                            : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                        }`}
+                      >
+                        Selanjutnya
+                      </button>
+                    </div>
+                  )}
+                </div>
+
                 <div className="hidden md:block">
-                  <div className="max-h-[320px] overflow-y-auto rounded-2xl border border-slate-100">
-                    <table className="min-w-full divide-y divide-slate-100">
-                      <thead className="sticky top-0 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                  <div className={`max-h-[320px] overflow-y-auto rounded-2xl border ${
+                    darkMode ? "border-slate-700" : "border-slate-100"
+                  }`}>
+                    <table className={`min-w-full divide-y ${
+                      darkMode ? "divide-slate-700" : "divide-slate-100"
+                    }`}>
+                      <thead className={`sticky top-0 text-xs uppercase tracking-wide ${
+                        darkMode 
+                          ? "bg-slate-800 text-slate-400" 
+                          : "bg-slate-50 text-slate-500"
+                      }`}>
                         <tr>
                           <th className="px-4 py-3 text-left">Tanggal</th>
                           <th className="px-4 py-3 text-left">Uraian</th>
@@ -2713,33 +4040,53 @@ const runningEntries = useMemo(() => {
                           <th className="px-4 py-3 text-center">Aksi</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-100 text-sm text-slate-700">
-                        {runningEntries.map((entry, index) => (
-                          <tr key={entry.id}>
-                            <td className="px-4 py-3 text-slate-500">
+                      <tbody className={`divide-y text-sm ${
+                        darkMode 
+                          ? "divide-slate-700 text-slate-300" 
+                          : "divide-slate-100 text-slate-700"
+                      }`}>
+                        {paginatedEntries.map((entry, index) => (
+                          <tr key={entry.id} className={`transition-colors ${
+                            darkMode ? "hover:bg-slate-700/50" : "hover:bg-slate-50"
+                          }`}>
+                            <td className={`px-4 py-3 ${
+                              darkMode ? "text-slate-400" : "text-slate-500"
+                            }`}>
                               {formatDate(entry.date, settings.timezone || "Asia/Jakarta")}
                             </td>
-                            <td className="px-4 py-3 font-semibold text-slate-900">
+                            <td className={`px-4 py-3 font-semibold ${
+                              darkMode ? "text-white" : "text-slate-900"
+                            }`}>
                               {entry.description}
                             </td>
-                            <td className="px-4 py-3 text-right text-emerald-600">
+                            <td className={`px-4 py-3 text-right ${
+                              darkMode ? "text-emerald-400" : "text-emerald-600"
+                            }`}>
                               {entry.type === "income"
                                 ? formatCurrency(entry.amount)
                                 : "-"}
                             </td>
-                            <td className="px-4 py-3 text-right text-rose-600">
+                            <td className={`px-4 py-3 text-right ${
+                              darkMode ? "text-rose-400" : "text-rose-600"
+                            }`}>
                               {entry.type === "expense"
                                 ? formatCurrency(entry.amount)
                                 : "-"}
                             </td>
-                            <td className="px-4 py-3 text-right font-semibold text-slate-900">
+                            <td className={`px-4 py-3 text-right font-semibold ${
+                              darkMode ? "text-white" : "text-slate-900"
+                            }`}>
                               {formatCurrency(entry.runningBalance)}
                             </td>
                           <td className="px-4 py-3">
                             <div className="flex justify-center gap-2">
                               <button
                                 onClick={() => openModal(entry)}
-                                className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500 transition hover:bg-slate-200"
+                                className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
+                                  darkMode
+                                    ? "bg-slate-700 text-slate-300 hover:bg-slate-600"
+                                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                                }`}
                               >
                                 Edit
                               </button>
@@ -2748,7 +4095,11 @@ const runningEntries = useMemo(() => {
                                   setDeleteTarget(entry.id);
                                   setIsDeleteConfirmOpen(true);
                                 }}
-                                className="rounded-full bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-500 transition hover:bg-rose-100"
+                                className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
+                                  darkMode
+                                    ? "bg-rose-900/30 text-rose-400 hover:bg-rose-900/50"
+                                    : "bg-rose-50 text-rose-600 hover:bg-rose-100"
+                                }`}
                               >
                                 Hapus
                               </button>
@@ -2761,27 +4112,74 @@ const runningEntries = useMemo(() => {
                   </div>
                 </div>
 
+                {/* Pagination Controls - Bottom */}
+                {totalPages > 1 && (
+                  <div className="mt-4 flex justify-center">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                        disabled={currentPage === 1}
+                        className={`rounded-xl border px-3 py-1.5 text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed ${
+                          darkMode
+                            ? "border-slate-600 bg-slate-800 text-white hover:bg-slate-700"
+                            : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                        }`}
+                      >
+                        Sebelumnya
+                      </button>
+                      <span className={`text-sm font-medium ${
+                        darkMode ? "text-slate-400" : "text-slate-600"
+                      }`}>
+                        {currentPage} / {totalPages}
+                      </span>
+                      <button
+                        onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                        disabled={currentPage === totalPages}
+                        className={`rounded-xl border px-3 py-1.5 text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed ${
+                          darkMode
+                            ? "border-slate-600 bg-slate-800 text-white hover:bg-slate-700"
+                            : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                        }`}
+                      >
+                        Selanjutnya
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div className="md:hidden">
-                  <div className="max-h-[360px] overflow-y-auto rounded-2xl border border-slate-100 p-1">
+                  <div className={`max-h-[360px] overflow-y-auto rounded-2xl border p-1 ${
+                    darkMode ? "border-slate-700" : "border-slate-100"
+                  }`}>
                     <div className="space-y-3">
-                      {runningEntries.map((entry, index) => (
+                      {paginatedEntries.map((entry, index) => (
                         <div
                           key={`${entry.id}-scrollable`}
-                          className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm"
+                          className={`rounded-2xl border p-4 shadow-sm transition-all hover:shadow-md ${
+                            darkMode 
+                              ? "border-slate-700 bg-slate-800" 
+                              : "border-slate-100 bg-white"
+                          }`}
                         >
                           <div className="flex items-start justify-between gap-2">
                         <div>
-                          <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                          <p className={`text-[11px] uppercase tracking-wide ${
+                            darkMode ? "text-slate-500" : "text-slate-400"
+                          }`}>
                             {formatDate(entry.date)}
                           </p>
-                          <p className="text-base font-semibold text-slate-900">
+                          <p className={`text-base font-semibold ${
+                            darkMode ? "text-white" : "text-slate-900"
+                          }`}>
                             {entry.description}
                           </p>
                         </div>
                         <div className="flex gap-2">
                           <button
                             onClick={() => openModal(entry)}
-                            className="text-xs font-semibold text-slate-500"
+                            className={`text-xs font-semibold ${
+                              darkMode ? "text-slate-400" : "text-slate-500"
+                            }`}
                           >
                             Edit
                           </button>
@@ -2790,7 +4188,9 @@ const runningEntries = useMemo(() => {
                               setDeleteTarget(entry.id);
                               setIsDeleteConfirmOpen(true);
                             }}
-                            className="text-xs font-semibold text-rose-500"
+                            className={`text-xs font-semibold ${
+                              darkMode ? "text-rose-400" : "text-rose-500"
+                            }`}
                           >
                             Hapus
                           </button>
@@ -2826,28 +4226,53 @@ const runningEntries = useMemo(() => {
 
       </div>
 
+      {/* Floating Action Button (FAB) for Mobile */}
+      {user?.role !== 'admin' && isAuthenticated && (
+        <button
+          onClick={openModal}
+          className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-indigo-600 text-white shadow-2xl transition-all hover:bg-indigo-700 hover:scale-110 active:scale-95 md:hidden"
+          aria-label="Tambah Transaksi"
+        >
+          <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+        </button>
+      )}
+
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 px-4">
           <div
             ref={modalRef}
-            className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl sm:p-8"
+            className={`w-full max-w-lg rounded-3xl p-6 shadow-2xl sm:p-8 ${
+              darkMode ? "bg-slate-800" : "bg-white"
+            }`}
           >
             <div className="mb-5 flex items-start justify-between gap-3">
               <div>
-                <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+                <p className={`text-sm font-semibold uppercase tracking-wide ${
+                  darkMode ? "text-slate-400" : "text-slate-500"
+                }`}>
                   {isPinStep ? "Keamanan PIN" : "Input Transaksi"}
                 </p>
-                <h2 className="text-2xl font-semibold text-slate-900">
+                <h2 className={`text-2xl font-semibold ${
+                  darkMode ? "text-white" : "text-slate-900"
+                }`}>
                   {modalTitle}
                 </h2>
                 {modalSubtitle && (
-                  <p className="text-sm text-slate-500">{modalSubtitle}</p>
+                  <p className={`text-sm ${
+                    darkMode ? "text-slate-400" : "text-slate-500"
+                  }`}>{modalSubtitle}</p>
                 )}
               </div>
               <button
                 type="button"
                 onClick={closeModal}
-                className="rounded-full bg-slate-100 p-2 text-slate-500 transition hover:bg-slate-200"
+                className={`rounded-full p-2 transition ${
+                  darkMode
+                    ? "bg-slate-700 text-slate-300 hover:bg-slate-600"
+                    : "bg-slate-100 text-slate-500 hover:bg-slate-200"
+                }`}
                 aria-label="Tutup form"
               >
                 ✕
@@ -2856,20 +4281,26 @@ const runningEntries = useMemo(() => {
             <form onSubmit={handleSubmit} className="space-y-4">
               {!isPinStep ? (
                 <>
-                  <Field label="Uraian">
+                  <Field label="Uraian" darkMode={darkMode}>
                     <input
                       name="description"
                       value={form.description || ""}
                       onChange={handleChange}
                       placeholder="Contoh: Warung Biru"
-                      className={inputClasses}
+                      className={getInputClasses(darkMode)}
                     />
                   </Field>
 
                   <div className="grid gap-4 sm:grid-cols-2">
-                    <Field label="Nominal">
-                      <div className="flex items-center rounded-2xl border border-slate-200 bg-slate-50 px-3 py-1">
-                        <span className="text-sm font-semibold text-slate-500">
+                    <Field label="Nominal" darkMode={darkMode}>
+                      <div className={`flex items-center rounded-2xl border px-3 py-1 ${
+                        darkMode
+                          ? "border-slate-600 bg-slate-700"
+                          : "border-slate-200 bg-slate-50"
+                      }`}>
+                        <span className={`text-sm font-semibold ${
+                          darkMode ? "text-slate-400" : "text-slate-500"
+                        }`}>
                           Rp
                         </span>
                         <input
@@ -2882,17 +4313,19 @@ const runningEntries = useMemo(() => {
                               : ""
                           }
                           onChange={handleChange}
-                          className="ml-2 w-full border-none bg-transparent px-0 py-2 text-base font-semibold text-slate-900 outline-none focus:ring-0"
+                          className={`ml-2 w-full border-none bg-transparent px-0 py-2 text-base font-semibold outline-none focus:ring-0 ${
+                            darkMode ? "text-white" : "text-slate-900"
+                          }`}
                           placeholder="0"
                         />
                       </div>
                     </Field>
-                    <Field label="Jenis">
+                    <Field label="Jenis" darkMode={darkMode}>
                       <select
                         name="type"
                         value={form.type || "expense"}
                         onChange={handleChange}
-                        className={inputClasses}
+                        className={getInputClasses(darkMode)}
                       >
                         <option value="expense">Pengeluaran</option>
                         <option value="income">Pemasukan</option>
@@ -2900,22 +4333,24 @@ const runningEntries = useMemo(() => {
                     </Field>
                   </div>
 
-                  <Field label="Tanggal">
+                  <Field label="Tanggal" darkMode={darkMode}>
                     <input
                       type="date"
                       name="date"
                       value={form.date || getToday(settings.timezone || "Asia/Jakarta")}
                       onChange={handleChange}
-                      className={inputClasses}
+                      className={getInputClasses(darkMode)}
                     />
                   </Field>
                 </>
               ) : settings.pinEnabled ? (
                 <div className="space-y-3">
-                  <p className="text-center text-sm text-slate-500">
+                  <p className={`text-center text-sm ${
+                    darkMode ? "text-slate-400" : "text-slate-500"
+                  }`}>
                     {pinDescriptions[pinMode ?? "create"]}
                   </p>
-                  <Field label="PIN">
+                  <Field label="PIN" darkMode={darkMode}>
                     <input
                       type="password"
                       name="pin"
@@ -2927,7 +4362,7 @@ const runningEntries = useMemo(() => {
                       inputMode="numeric"
                       pattern="\d{4}"
                       maxLength={4}
-                      className={`${inputClasses} text-center tracking-[0.5em]`}
+                      className={`${getInputClasses(darkMode)} text-center tracking-[0.5em]`}
                       placeholder="••••"
                     />
                   </Field>
@@ -3003,14 +4438,22 @@ const runningEntries = useMemo(() => {
 
       {isConfirmOpen && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/70 px-4">
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 text-center shadow-2xl sm:p-8">
-            <p className="text-sm font-semibold uppercase tracking-wide text-rose-500">
+          <div className={`w-full max-w-md rounded-3xl p-6 text-center shadow-2xl sm:p-8 ${
+            darkMode ? "bg-slate-800" : "bg-white"
+          }`}>
+            <p className={`text-sm font-semibold uppercase tracking-wide ${
+              darkMode ? "text-rose-400" : "text-rose-500"
+            }`}>
               Hapus semua data?
             </p>
-            <h2 className="mt-2 text-2xl font-semibold text-slate-900">
+            <h2 className={`mt-2 text-2xl font-semibold ${
+              darkMode ? "text-white" : "text-slate-900"
+            }`}>
               Tindakan ini permanen
             </h2>
-            <p className="mt-3 text-sm text-slate-500">
+            <p className={`mt-3 text-sm ${
+              darkMode ? "text-slate-400" : "text-slate-500"
+            }`}>
               Semua transaksi akan dihapus dan tidak dapat dikembalikan. Pastikan
               Anda sudah membuat cadangan jika diperlukan.
             </p>
@@ -3018,7 +4461,11 @@ const runningEntries = useMemo(() => {
               <button
                 type="button"
                 onClick={() => setIsConfirmOpen(false)}
-                className="inline-flex items-center justify-center rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+                className={`inline-flex items-center justify-center rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                  darkMode
+                    ? "border-slate-600 text-slate-300 hover:bg-slate-700"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                }`}
               >
                 Batalkan
               </button>
@@ -3053,14 +4500,22 @@ const runningEntries = useMemo(() => {
 
       {isDeleteConfirmOpen && deleteTarget && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/70 px-4">
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 text-center shadow-2xl sm:p-8">
-            <p className="text-sm font-semibold uppercase tracking-wide text-rose-500">
+          <div className={`w-full max-w-md rounded-3xl p-6 text-center shadow-2xl sm:p-8 ${
+            darkMode ? "bg-slate-800" : "bg-white"
+          }`}>
+            <p className={`text-sm font-semibold uppercase tracking-wide ${
+              darkMode ? "text-rose-400" : "text-rose-500"
+            }`}>
               Hapus transaksi?
             </p>
-            <h2 className="mt-2 text-2xl font-semibold text-slate-900">
+            <h2 className={`mt-2 text-2xl font-semibold ${
+              darkMode ? "text-white" : "text-slate-900"
+            }`}>
               Tindakan tidak dapat dibatalkan
             </h2>
-            <p className="mt-3 text-sm text-slate-500">
+            <p className={`mt-3 text-sm ${
+              darkMode ? "text-slate-400" : "text-slate-500"
+            }`}>
               Transaksi ini akan dihapus permanen dari database.
             </p>
             <div className="mt-6 grid gap-3 sm:grid-cols-2">
@@ -3070,7 +4525,11 @@ const runningEntries = useMemo(() => {
                   setIsDeleteConfirmOpen(false);
                   setDeleteTarget(null);
                 }}
-                className="inline-flex items-center justify-center rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+                className={`inline-flex items-center justify-center rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                  darkMode
+                    ? "border-slate-600 text-slate-300 hover:bg-slate-700"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                }`}
               >
                 Batalkan
               </button>
@@ -3104,18 +4563,26 @@ const runningEntries = useMemo(() => {
 
       {isExportPinOpen && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/70 px-4">
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 text-center shadow-2xl sm:p-8">
-            <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+          <div className={`w-full max-w-md rounded-3xl p-6 text-center shadow-2xl sm:p-8 ${
+            darkMode ? "bg-slate-800" : "bg-white"
+          }`}>
+            <p className={`text-sm font-semibold uppercase tracking-wide ${
+              darkMode ? "text-slate-400" : "text-slate-500"
+            }`}>
               Keamanan PIN
             </p>
-            <h2 className="mt-2 text-2xl font-semibold text-slate-900">
+            <h2 className={`mt-2 text-2xl font-semibold ${
+              darkMode ? "text-white" : "text-slate-900"
+            }`}>
               Konfirmasi PIN
             </h2>
-            <p className="mt-3	text-sm text-slate-500">
+            <p className={`mt-3 text-sm ${
+              darkMode ? "text-slate-400" : "text-slate-500"
+            }`}>
               Masukkan PIN 4-digit untuk mengunduh transaksi.
             </p>
             <div className="mt-4 space-y-3 text-left">
-              <Field label="PIN">
+              <Field label="PIN" darkMode={darkMode}>
                 <input
                   type="password"
                   name="pin"
@@ -3127,7 +4594,7 @@ const runningEntries = useMemo(() => {
                   inputMode="numeric"
                   pattern="\d{4}"
                   maxLength={4}
-                  className={`${inputClasses} text-center tracking-[0.5em]`}
+                  className={`${getInputClasses(darkMode)} text-center tracking-[0.5em]`}
                   placeholder="••••"
                 />
               </Field>
@@ -3141,7 +4608,11 @@ const runningEntries = useMemo(() => {
               <button
                 type="button"
                 onClick={closeExportPinModal}
-                className="inline-flex items-center justify-center rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+                className={`inline-flex items-center justify-center rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                  darkMode
+                    ? "border-slate-600 text-slate-300 hover:bg-slate-700"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                }`}
               >
                 Batalkan
               </button>
@@ -3159,15 +4630,23 @@ const runningEntries = useMemo(() => {
 
       {isImportFileOpen && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/70 px-4">
-          <div className="relative w-full max-w-md rounded-3xl bg-white p-6 text-center shadow-2xl sm:p-8">
-            {importing && <LoadingOverlay message="Mengimpor transaksi..." />}
-            <p className="text-sm font-semibold uppercase tracking-wide text-indigo-500">
+          <div className={`relative w-full max-w-md rounded-3xl p-6 text-center shadow-2xl sm:p-8 ${
+            darkMode ? "bg-slate-800" : "bg-white"
+          }`}>
+            {importing && <LoadingOverlay message="Mengimpor transaksi..." darkMode={darkMode} />}
+            <p className={`text-sm font-semibold uppercase tracking-wide ${
+              darkMode ? "text-indigo-400" : "text-indigo-500"
+            }`}>
               Import Excel
             </p>
-            <h2 className="mt-2 text-2xl font-semibold text-slate-900">
+            <h2 className={`mt-2 text-2xl font-semibold ${
+              darkMode ? "text-white" : "text-slate-900"
+            }`}>
               Upload File Excel
             </h2>
-            <p className="mt-3 text-sm text-slate-500">
+            <p className={`mt-3 text-sm ${
+              darkMode ? "text-slate-400" : "text-slate-500"
+            }`}>
               Pilih file Excel yang akan diimpor. Format harus sesuai dengan file yang diunduh dari aplikasi ini.
             </p>
             <div className="mt-6 space-y-4">
@@ -3184,24 +4663,34 @@ const runningEntries = useMemo(() => {
                   htmlFor="excel-file-input"
                   className={`flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed px-6 py-8 transition ${
                     importing
-                      ? "border-slate-200 bg-slate-50 cursor-not-allowed"
+                      ? darkMode
+                        ? "border-slate-700 bg-slate-700/50 cursor-not-allowed"
+                        : "border-slate-200 bg-slate-50 cursor-not-allowed"
+                      : darkMode
+                      ? "border-indigo-600 bg-indigo-900/30 hover:border-indigo-500 hover:bg-indigo-900/50"
                       : "border-indigo-300 bg-indigo-50 hover:border-indigo-400 hover:bg-indigo-100"
                   }`}
                 >
                   {importing ? (
                     <>
                       <div className="mb-2 text-2xl">⏳</div>
-                      <p className="text-sm font-semibold text-slate-600">
+                      <p className={`text-sm font-semibold ${
+                        darkMode ? "text-slate-300" : "text-slate-600"
+                      }`}>
                         Memproses file...
                       </p>
                     </>
                   ) : (
                     <>
                       <div className="mb-2 text-2xl">📄</div>
-                      <p className="text-sm font-semibold text-indigo-600">
+                      <p className={`text-sm font-semibold ${
+                        darkMode ? "text-indigo-400" : "text-indigo-600"
+                      }`}>
                         Klik untuk memilih file
                       </p>
-                      <p className="mt-1 text-xs text-slate-500">
+                      <p className={`mt-1 text-xs ${
+                        darkMode ? "text-slate-400" : "text-slate-500"
+                      }`}>
                         Format: .xlsx atau .xls
                       </p>
                     </>
@@ -3209,9 +4698,15 @@ const runningEntries = useMemo(() => {
                 </label>
               </div>
               {importFile && (
-                <div className="rounded-xl bg-slate-50 p-3 text-left">
-                  <p className="text-xs font-semibold text-slate-500">File terpilih:</p>
-                  <p className="text-sm font-medium text-slate-900">{importFile.name}</p>
+                <div className={`rounded-xl p-3 text-left ${
+                  darkMode ? "bg-slate-700/50" : "bg-slate-50"
+                }`}>
+                  <p className={`text-xs font-semibold ${
+                    darkMode ? "text-slate-400" : "text-slate-500"
+                  }`}>File terpilih:</p>
+                  <p className={`text-sm font-medium ${
+                    darkMode ? "text-white" : "text-slate-900"
+                  }`}>{importFile.name}</p>
                 </div>
               )}
             </div>
@@ -3220,7 +4715,11 @@ const runningEntries = useMemo(() => {
                 type="button"
                 onClick={closeImportFileModal}
                 disabled={importing}
-                className="inline-flex w-full items-center justify-center rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
+                className={`inline-flex w-full items-center justify-center rounded-2xl border px-4 py-3 text-sm font-semibold transition disabled:opacity-50 ${
+                  darkMode
+                    ? "border-slate-600 text-slate-300 hover:bg-slate-700"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                }`}
               >
                 Batalkan
               </button>
@@ -3231,30 +4730,46 @@ const runningEntries = useMemo(() => {
 
       {isImportPinOpen && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/70 px-4">
-          <div className="relative w-full max-w-md rounded-3xl bg-white p-6 text-center shadow-2xl sm:p-8">
-            {importing && <LoadingOverlay message="Mengimpor transaksi..." />}
-            <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+          <div className={`relative w-full max-w-md rounded-3xl p-6 text-center shadow-2xl sm:p-8 ${
+            darkMode ? "bg-slate-800" : "bg-white"
+          }`}>
+            {importing && <LoadingOverlay message="Mengimpor transaksi..." darkMode={darkMode} />}
+            <p className={`text-sm font-semibold uppercase tracking-wide ${
+              darkMode ? "text-slate-400" : "text-slate-500"
+            }`}>
               Keamanan PIN
             </p>
-            <h2 className="mt-2 text-2xl font-semibold text-slate-900">
+            <h2 className={`mt-2 text-2xl font-semibold ${
+              darkMode ? "text-white" : "text-slate-900"
+            }`}>
               Konfirmasi PIN
             </h2>
-            <p className="mt-3 text-sm text-slate-500">
+            <p className={`mt-3 text-sm ${
+              darkMode ? "text-slate-400" : "text-slate-500"
+            }`}>
               Masukkan PIN 4-digit untuk mengimpor {importPreview.length} transaksi dari Excel.
             </p>
             {importPreview.length > 0 && (
-              <div className="mt-4 max-h-40 overflow-y-auto rounded-xl bg-slate-50 p-3 text-left">
-                <p className="mb-2 text-xs font-semibold text-slate-500">
+              <div className={`mt-4 max-h-40 overflow-y-auto rounded-xl p-3 text-left ${
+                darkMode ? "bg-slate-700/50" : "bg-slate-50"
+              }`}>
+                <p className={`mb-2 text-xs font-semibold ${
+                  darkMode ? "text-slate-400" : "text-slate-500"
+                }`}>
                   Preview ({importPreview.length} transaksi):
                 </p>
                 <div className="space-y-1">
                   {importPreview.slice(0, 5).map((t, idx) => (
-                    <p key={idx} className="text-xs text-slate-600">
+                    <p key={idx} className={`text-xs ${
+                      darkMode ? "text-slate-300" : "text-slate-600"
+                    }`}>
                       • {formatDate(t.date, settings.timezone || "Asia/Jakarta")} - {t.description} - {formatCurrency(t.amount)} ({t.type === "income" ? "Pemasukan" : "Pengeluaran"})
                     </p>
                   ))}
                   {importPreview.length > 5 && (
-                    <p className="text-xs text-slate-400">
+                    <p className={`text-xs ${
+                      darkMode ? "text-slate-400" : "text-slate-400"
+                    }`}>
                       ... dan {importPreview.length - 5} transaksi lainnya
                     </p>
                   )}
@@ -3262,7 +4777,7 @@ const runningEntries = useMemo(() => {
               </div>
             )}
             <div className="mt-4 space-y-3 text-left">
-              <Field label="PIN">
+              <Field label="PIN" darkMode={darkMode}>
                 <input
                   type="password"
                   name="pin"
@@ -3274,7 +4789,7 @@ const runningEntries = useMemo(() => {
                   inputMode="numeric"
                   pattern="\d{4}"
                   maxLength={4}
-                  className={`${inputClasses} text-center tracking-[0.5em]`}
+                  className={`${getInputClasses(darkMode)} text-center tracking-[0.5em]`}
                   placeholder="••••"
                   autoFocus
                 />
@@ -3290,7 +4805,11 @@ const runningEntries = useMemo(() => {
                 type="button"
                 onClick={closeImportPinModal}
                 disabled={importing}
-                className="inline-flex items-center justify-center rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 disabled:opacity-50"
+                className={`inline-flex items-center justify-center rounded-2xl border px-4 py-3 text-sm font-semibold transition disabled:opacity-50 ${
+                  darkMode
+                    ? "border-slate-600 text-slate-300 hover:bg-slate-700"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                }`}
               >
                 Batalkan
               </button>
@@ -3357,11 +4876,17 @@ const runningEntries = useMemo(() => {
       {/* Delete User Confirmation Modal */}
       {isDeleteUserConfirmOpen && deleteUserTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 px-4">
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl sm:p-8">
+          <div className={`w-full max-w-md rounded-3xl p-6 shadow-2xl sm:p-8 ${
+            darkMode ? "bg-slate-800" : "bg-white"
+          }`}>
             <div className="mb-6 text-center">
-              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-rose-100">
+              <div className={`mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full ${
+                darkMode ? "bg-rose-900/30" : "bg-rose-100"
+              }`}>
                 <svg
-                  className="h-8 w-8 text-rose-600"
+                  className={`h-8 w-8 ${
+                    darkMode ? "text-rose-400" : "text-rose-600"
+                  }`}
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -3374,10 +4899,14 @@ const runningEntries = useMemo(() => {
                   />
                 </svg>
               </div>
-              <h2 className="text-2xl font-semibold text-slate-900">
+              <h2 className={`text-2xl font-semibold ${
+                darkMode ? "text-white" : "text-slate-900"
+              }`}>
                 Konfirmasi Hapus User
               </h2>
-              <p className="mt-2 text-sm text-slate-600">
+              <p className={`mt-2 text-sm ${
+                darkMode ? "text-slate-400" : "text-slate-600"
+              }`}>
                 Apakah Anda yakin ingin menghapus user ini? Semua transaksi yang terkait dengan user ini akan ikut terhapus secara permanen. Tindakan ini tidak dapat dibatalkan.
               </p>
             </div>
@@ -3388,7 +4917,11 @@ const runningEntries = useMemo(() => {
                   setIsDeleteUserConfirmOpen(false);
                   setDeleteUserTarget(null);
                 }}
-                className="flex-1 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+                className={`flex-1 rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                  darkMode
+                    ? "border-slate-600 text-slate-300 hover:bg-slate-700"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                }`}
               >
                 Batal
               </button>
@@ -3408,13 +4941,19 @@ const runningEntries = useMemo(() => {
       {/* Edit User Modal */}
       {isEditUserModalOpen && selectedUser && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 px-4">
-          <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl sm:p-8">
+          <div className={`w-full max-w-lg rounded-3xl p-6 shadow-2xl sm:p-8 ${
+            darkMode ? "bg-slate-800" : "bg-white"
+          }`}>
             <div className="mb-6 flex items-start justify-between">
               <div>
-                <p className="text-sm font-semibold uppercase tracking-wide text-indigo-500">
+                <p className={`text-sm font-semibold uppercase tracking-wide ${
+                  darkMode ? "text-indigo-400" : "text-indigo-500"
+                }`}>
                   Admin
                 </p>
-                <h2 className="mt-2 text-2xl font-semibold text-slate-900">
+                <h2 className={`mt-2 text-2xl font-semibold ${
+                  darkMode ? "text-white" : "text-slate-900"
+                }`}>
                   Edit User
                 </h2>
               </div>
@@ -3424,7 +4963,11 @@ const runningEntries = useMemo(() => {
                   setIsEditUserModalOpen(false);
                   setSelectedUser(null);
                 }}
-                className="rounded-full bg-slate-100 p-2 text-slate-500 transition hover:bg-slate-200"
+                className={`rounded-full p-2 transition ${
+                  darkMode
+                    ? "bg-slate-700 text-slate-300 hover:bg-slate-600"
+                    : "bg-slate-100 text-slate-500 hover:bg-slate-200"
+                }`}
                 aria-label="Tutup"
               >
                 ✕
@@ -3433,43 +4976,54 @@ const runningEntries = useMemo(() => {
 
             <form onSubmit={handleUpdateUser} className="space-y-4">
               <div>
-                <label className="mb-2 block text-sm font-semibold text-slate-700">
+                <label className={`mb-2 block text-sm font-semibold ${
+                  darkMode ? "text-slate-300" : "text-slate-700"
+                }`}>
                   Nama
                 </label>
                 <input
                   type="text"
                   value={editUserForm.name}
                   onChange={(e) => setEditUserForm({ ...editUserForm, name: e.target.value })}
-                  className={inputClasses}
+                  className={getInputClasses(darkMode)}
                   placeholder="Nama Lengkap"
                   required
                 />
               </div>
               <div>
-                <label className="mb-2 block text-sm font-semibold text-slate-700">
+                <label className={`mb-2 block text-sm font-semibold ${
+                  darkMode ? "text-slate-300" : "text-slate-700"
+                }`}>
                   Email
                 </label>
                 <input
                   type="email"
                   value={editUserForm.email}
                   onChange={(e) => setEditUserForm({ ...editUserForm, email: e.target.value })}
-                  className={inputClasses}
+                  className={getInputClasses(darkMode)}
                   placeholder="nama@email.com"
                   required
                 />
               </div>
               <div>
-                <label className="mb-2 block text-sm font-semibold text-slate-700">
-                  Role
+                <label className={`mb-2 block text-sm font-semibold ${
+                  darkMode ? "text-slate-300" : "text-slate-700"
+                }`}>
+                  Password Baru (opsional)
                 </label>
-                <select
-                  value={editUserForm.role}
-                  onChange={(e) => setEditUserForm({ ...editUserForm, role: e.target.value })}
-                  className={inputClasses}
-                >
-                  <option value="user">User</option>
-                  <option value="admin">Admin</option>
-                </select>
+                <input
+                  type="password"
+                  value={editUserForm.password}
+                  onChange={(e) => setEditUserForm({ ...editUserForm, password: e.target.value })}
+                  className={getInputClasses(darkMode)}
+                  placeholder="Kosongkan jika tidak ingin mengubah password"
+                  minLength={6}
+                />
+                <p className={`mt-1 text-xs ${
+                  darkMode ? "text-slate-400" : "text-slate-500"
+                }`}>
+                  Kosongkan jika tidak ingin mengubah password. Minimal 6 karakter jika diisi.
+                </p>
               </div>
               <div className="flex gap-3">
                 <button
@@ -3478,7 +5032,11 @@ const runningEntries = useMemo(() => {
                     setIsEditUserModalOpen(false);
                     setSelectedUser(null);
                   }}
-                  className="flex-1 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+                  className={`flex-1 rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                    darkMode
+                      ? "border-slate-600 text-slate-300 hover:bg-slate-700"
+                      : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                  }`}
                 >
                   Batal
                 </button>
@@ -3495,16 +5053,142 @@ const runningEntries = useMemo(() => {
         </div>
       )}
 
+      {/* Create User/Admin Modal */}
+      {isCreateUserModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 px-4">
+          <div className={`w-full max-w-lg rounded-3xl p-6 shadow-2xl sm:p-8 ${
+            darkMode ? "bg-slate-800" : "bg-white"
+          }`}>
+            <div className="mb-6 flex items-start justify-between">
+              <div>
+                <p className={`text-sm font-semibold uppercase tracking-wide ${
+                  darkMode ? "text-indigo-400" : "text-indigo-500"
+                }`}>
+                  Admin
+                </p>
+                <h2 className={`mt-2 text-2xl font-semibold ${
+                  darkMode ? "text-white" : "text-slate-900"
+                }`}>
+                  Tambah {createUserForm.role === 'admin' ? 'Admin' : 'User'}
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCreateUserModalOpen(false);
+                  setCreateUserForm({ name: "", email: "", password: "", role: "user" });
+                }}
+                className={`rounded-full p-2 transition ${
+                  darkMode
+                    ? "bg-slate-700 text-slate-300 hover:bg-slate-600"
+                    : "bg-slate-100 text-slate-500 hover:bg-slate-200"
+                }`}
+                aria-label="Tutup"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateUser} className="space-y-4">
+              <div>
+                <label className={`mb-2 block text-sm font-semibold ${
+                  darkMode ? "text-slate-300" : "text-slate-700"
+                }`}>
+                  Nama
+                </label>
+                <input
+                  type="text"
+                  value={createUserForm.name}
+                  onChange={(e) => setCreateUserForm({ ...createUserForm, name: e.target.value })}
+                  className={getInputClasses(darkMode)}
+                  placeholder="Nama lengkap"
+                  required
+                />
+              </div>
+              <div>
+                <label className={`mb-2 block text-sm font-semibold ${
+                  darkMode ? "text-slate-300" : "text-slate-700"
+                }`}>
+                  Email
+                </label>
+                <input
+                  type="email"
+                  value={createUserForm.email}
+                  onChange={(e) => setCreateUserForm({ ...createUserForm, email: e.target.value })}
+                  className={getInputClasses(darkMode)}
+                  placeholder="nama@email.com"
+                  required
+                />
+              </div>
+              <div>
+                <label className={`mb-2 block text-sm font-semibold ${
+                  darkMode ? "text-slate-300" : "text-slate-700"
+                }`}>
+                  Password
+                </label>
+                <input
+                  type="password"
+                  value={createUserForm.password}
+                  onChange={(e) => setCreateUserForm({ ...createUserForm, password: e.target.value })}
+                  className={getInputClasses(darkMode)}
+                  placeholder="Minimal 6 karakter"
+                  required
+                  minLength={6}
+                />
+                <p className={`mt-1 text-xs ${
+                  darkMode ? "text-slate-400" : "text-slate-500"
+                }`}>
+                  Password minimal 6 karakter
+                </p>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsCreateUserModalOpen(false);
+                    setCreateUserForm({ name: "", email: "", password: "", role: "user" });
+                  }}
+                  className={`flex-1 rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                    darkMode
+                      ? "border-slate-600 text-slate-300 hover:bg-slate-700"
+                      : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  Batal
+                </button>
+                <LoadingButton
+                  type="submit"
+                  loading={createUserLoading}
+                  className={`flex-1 rounded-2xl px-4 py-3 text-sm font-semibold text-white shadow-soft transition ${
+                    createUserForm.role === 'admin' 
+                      ? 'bg-purple-600 hover:bg-purple-700' 
+                      : 'bg-indigo-600 hover:bg-indigo-700'
+                  }`}
+                >
+                  Buat {createUserForm.role === 'admin' ? 'Admin' : 'User'}
+                </LoadingButton>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Settings Modal */}
       {isSettingsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 px-4">
-          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl sm:p-8">
+          <div className={`w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl p-6 shadow-2xl sm:p-8 ${
+            darkMode ? "bg-slate-800" : "bg-white"
+          }`}>
             <div className="mb-6 flex items-start justify-between">
               <div>
-                <p className="text-sm font-semibold uppercase tracking-wide text-indigo-500">
+                <p className={`text-sm font-semibold uppercase tracking-wide ${
+                  darkMode ? "text-indigo-400" : "text-indigo-500"
+                }`}>
                   Pengaturan
                 </p>
-                <h2 className="mt-2 text-2xl font-semibold text-slate-900">
+                <h2 className={`mt-2 text-2xl font-semibold ${
+                  darkMode ? "text-white" : "text-slate-900"
+                }`}>
                   Profile & Keamanan
                 </h2>
               </div>
@@ -3514,7 +5198,11 @@ const runningEntries = useMemo(() => {
                   setIsSettingsOpen(false);
                   setSettingsError("");
                 }}
-                className="rounded-full bg-slate-100 p-2 text-slate-500 transition hover:bg-slate-200"
+                className={`rounded-full p-2 transition ${
+                  darkMode
+                    ? "bg-slate-700 text-slate-300 hover:bg-slate-600"
+                    : "bg-slate-100 text-slate-500 hover:bg-slate-200"
+                }`}
                 aria-label="Tutup settings"
               >
                 ✕
@@ -3523,43 +5211,73 @@ const runningEntries = useMemo(() => {
 
             <div className="space-y-6">
               {/* Profile Section */}
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6">
-                <h3 className="mb-4 text-lg font-semibold text-slate-900">Profile</h3>
+              <div className={`rounded-2xl border p-6 ${
+                darkMode ? "border-slate-700 bg-slate-700/50" : "border-slate-200 bg-slate-50"
+              }`}>
+                <h3 className={`mb-4 text-lg font-semibold ${
+                  darkMode ? "text-white" : "text-slate-900"
+                }`}>Profile</h3>
                 <form onSubmit={handleUpdateProfile} className="space-y-4">
                   <div>
-                    <label className="mb-2 block text-sm font-semibold text-slate-700">
+                    <label className={`mb-2 block text-sm font-semibold ${
+                      darkMode ? "text-slate-300" : "text-slate-700"
+                    }`}>
                       Nama
                     </label>
                     <input
                       type="text"
                       value={settingsForm.name}
                       onChange={(e) => setSettingsForm({ ...settingsForm, name: e.target.value })}
-                      className={inputClasses}
+                      className={getInputClasses(darkMode)}
                       placeholder="Nama Lengkap"
                       required
                     />
                   </div>
                   <div>
-                    <label className="mb-2 block text-sm font-semibold text-slate-700">
+                    <label className={`mb-2 block text-sm font-semibold ${
+                      darkMode ? "text-slate-300" : "text-slate-700"
+                    }`}>
                       Email
                     </label>
                     <input
                       type="email"
                       value={settingsForm.email}
                       onChange={(e) => setSettingsForm({ ...settingsForm, email: e.target.value })}
-                      className={inputClasses}
+                      className={getInputClasses(darkMode)}
                       placeholder="nama@email.com"
                       required
                     />
                   </div>
                   <div>
-                    <label className="mb-2 block text-sm font-semibold text-slate-700">
+                    <label className={`mb-2 block text-sm font-semibold ${
+                      darkMode ? "text-slate-300" : "text-slate-700"
+                    }`}>
+                      Password Baru (opsional)
+                    </label>
+                    <input
+                      type="password"
+                      value={settingsForm.password}
+                      onChange={(e) => setSettingsForm({ ...settingsForm, password: e.target.value })}
+                      className={getInputClasses(darkMode)}
+                      placeholder="Kosongkan jika tidak ingin mengubah password"
+                      minLength={6}
+                    />
+                    <p className={`mt-1 text-xs ${
+                      darkMode ? "text-slate-400" : "text-slate-500"
+                    }`}>
+                      Kosongkan jika tidak ingin mengubah password. Minimal 6 karakter jika diisi.
+                    </p>
+                  </div>
+                  <div>
+                    <label className={`mb-2 block text-sm font-semibold ${
+                      darkMode ? "text-slate-300" : "text-slate-700"
+                    }`}>
                       Timezone
                     </label>
                     <select
                       value={settingsForm.timezone || "Asia/Jakarta"}
                       onChange={(e) => setSettingsForm({ ...settingsForm, timezone: e.target.value })}
-                      className={inputClasses}
+                      className={getInputClasses(darkMode)}
                     >
                       <optgroup label="Indonesia">
                         <option value="Asia/Jakarta">WIB (Jakarta) - GMT+7</option>
@@ -3642,7 +5360,7 @@ const runningEntries = useMemo(() => {
                         type="password"
                         value={settingsForm.pin}
                         onChange={(e) => setSettingsForm({ ...settingsForm, pin: e.target.value.slice(0, 4) })}
-                        className={`${inputClasses} text-center tracking-[0.5em]`}
+                        className={`${getInputClasses(darkMode)} text-center tracking-[0.5em]`}
                         placeholder="••••"
                         inputMode="numeric"
                         pattern="\d{4}"
@@ -3680,21 +5398,265 @@ const runningEntries = useMemo(() => {
   );
 }
 
-const Field = ({ label, children }) => (
-  <label className="text-sm font-medium text-slate-600">
+const Field = ({ label, children, darkMode = false }) => (
+  <label className={`text-sm font-medium ${
+    darkMode ? "text-slate-400" : "text-slate-600"
+  }`}>
     {label}
     <div className="mt-2">{children}</div>
   </label>
 );
 
+// Calendar Heatmap Component
+const CalendarHeatmap = ({ data, darkMode }) => {
+  // Helper untuk format tanggal ke format Indonesia
+  const formatDateID = (dateString) => {
+    if (!dateString) return "";
+    const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) return "";
+    
+    return date.toLocaleDateString("id-ID", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+  };
+
+  // Helper untuk mendapatkan nama bulan
+  const getMonthName = (dateString) => {
+    const date = new Date(dateString);
+    return date.toLocaleDateString("id-ID", { month: "short" });
+  };
+
+  // Helper untuk mendapatkan intensitas berdasarkan jumlah transaksi
+  const getIntensity = (count, maxCount) => {
+    if (count === 0) return 0;
+    if (maxCount === 0) return 0;
+    
+    const percentage = count / maxCount;
+    if (percentage <= 0.2) return 1;
+    if (percentage <= 0.4) return 2;
+    if (percentage <= 0.6) return 3;
+    if (percentage <= 0.8) return 4;
+    return 5;
+  };
+
+  // Helper untuk mendapatkan warna berdasarkan intensitas
+  const getColor = (intensity) => {
+    // Menggunakan skema warna seperti GitHub (hijau)
+    // Dark mode: dari gelap ke terang
+    // Light mode: dari terang ke gelap
+    const colors = darkMode 
+      ? [
+          '#161b22', // Level 0: tidak ada transaksi
+          '#0e4429', // Level 1: sedikit
+          '#006d32', // Level 2: sedang
+          '#26a641', // Level 3: banyak
+          '#39d353', // Level 4: sangat banyak
+          '#40c463'  // Level 5: maksimal
+        ]
+      : [
+          '#ebedf0', // Level 0: tidak ada transaksi
+          '#9be9a8', // Level 1: sedikit
+          '#40c463', // Level 2: sedang
+          '#30a14e', // Level 3: banyak
+          '#216e39', // Level 4: sangat banyak
+          '#0e4429'  // Level 5: maksimal
+        ];
+    return colors[intensity] || colors[0];
+  };
+
+  // Generate last 365 days (1 tahun terakhir)
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  const days = [];
+  for (let i = 364; i >= 0; i--) {
+    const date = new Date(today);
+    date.setDate(date.getDate() - i);
+    const dateKey = date.toISOString().split('T')[0];
+    const count = data.get(dateKey) || 0;
+    days.push({
+      date: dateKey,
+      dateObj: date,
+      count,
+    });
+  }
+
+  // Hitung max count untuk normalisasi intensitas
+  const maxCount = Math.max(...days.map(d => d.count), 1);
+
+  // Tambahkan intensitas ke setiap hari
+  days.forEach(day => {
+    day.intensity = getIntensity(day.count, maxCount);
+  });
+
+  // Group by weeks (Minggu = 0, Senin = 1, ..., Sabtu = 6)
+  // GitHub menggunakan format: Minggu di kolom pertama
+  const weeks = [];
+  let currentWeek = [];
+  
+  days.forEach((day, index) => {
+    const dayOfWeek = day.dateObj.getDay(); // 0 = Minggu, 1 = Senin, ..., 6 = Sabtu
+    
+    // Jika ini hari pertama dan bukan Minggu, isi dengan null untuk hari-hari sebelumnya
+    if (index === 0 && dayOfWeek > 0) {
+      for (let i = 0; i < dayOfWeek; i++) {
+        currentWeek.push(null);
+      }
+    }
+    
+    currentWeek.push(day);
+    
+    // Jika ini hari Sabtu (6) atau hari terakhir, selesaikan minggu ini
+    if (dayOfWeek === 6 || index === days.length - 1) {
+      // Jika hari terakhir bukan Sabtu, isi sisa hari dengan null
+      if (index === days.length - 1 && dayOfWeek !== 6) {
+        for (let i = dayOfWeek + 1; i < 7; i++) {
+          currentWeek.push(null);
+        }
+      }
+      weeks.push([...currentWeek]);
+      currentWeek = [];
+    }
+  });
+
+  // Label hari dalam seminggu (Minggu sampai Sabtu)
+  const dayLabels = ['M', 'S', 'S', 'R', 'K', 'J', 'S']; // Minggu, Senin, Selasa, Rabu, Kamis, Jumat, Sabtu
+
+  // Deteksi bulan untuk label bulan
+  const monthLabels = [];
+  let lastMonth = -1;
+  weeks.forEach((week, weekIndex) => {
+    const firstDay = week.find(d => d !== null);
+    if (firstDay) {
+      const month = firstDay.dateObj.getMonth();
+      if (month !== lastMonth) {
+        monthLabels.push({
+          weekIndex,
+          month: getMonthName(firstDay.date),
+          date: firstDay.date
+        });
+        lastMonth = month;
+      }
+    }
+  });
+
+  return (
+    <div className="w-full">
+      {/* Label bulan di atas */}
+      <div className="mb-2 flex items-start gap-1" style={{ paddingLeft: '20px' }}>
+        {monthLabels.map((label, idx) => {
+          const nextLabel = monthLabels[idx + 1];
+          const weekSpan = nextLabel 
+            ? nextLabel.weekIndex - label.weekIndex 
+            : weeks.length - label.weekIndex;
+          
+          return (
+            <div
+              key={idx}
+              className={`text-xs ${
+                darkMode ? "text-slate-400" : "text-slate-500"
+              }`}
+              style={{ 
+                width: `${weekSpan * 11}px`, // 11px = width (10px) + gap (1px)
+                textAlign: 'left'
+              }}
+            >
+              {label.month}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="flex gap-2 w-full">
+        {/* Label hari dalam seminggu */}
+        <div className="flex flex-col gap-1 pt-0.5 flex-shrink-0">
+          {dayLabels.map((label, index) => (
+            <div
+              key={index}
+              className={`h-[10px] text-xs leading-[10px] ${
+                darkMode ? "text-slate-400" : "text-slate-500"
+              }`}
+              style={{ 
+                visibility: index % 2 === 0 ? 'visible' : 'hidden' // Hanya tampilkan M, S, R, J
+              }}
+            >
+              {label}
+            </div>
+          ))}
+        </div>
+
+        {/* Grid kalender - Full width */}
+        <div className="flex-1 min-w-0">
+          <div className="flex gap-1 w-full">
+            {weeks.map((week, weekIndex) => (
+              <div key={weekIndex} className="flex flex-col gap-1" style={{ flex: '1 0 0', minWidth: '10px' }}>
+                {week.map((day, dayIndex) => {
+                  if (!day) {
+                    return (
+                      <div 
+                        key={`empty-${dayIndex}`} 
+                        className="w-full aspect-square rounded-sm"
+                        style={{
+                          backgroundColor: getColor(0),
+                          minWidth: '10px'
+                        }}
+                      />
+                    );
+                  }
+                  
+                  return (
+                    <div
+                      key={day.date}
+                      className="w-full aspect-square rounded-sm transition-all hover:scale-125 hover:ring-2 hover:ring-indigo-400 hover:z-10 relative"
+                      style={{
+                        backgroundColor: getColor(day.intensity),
+                        cursor: day.count > 0 ? 'pointer' : 'default',
+                        minWidth: '10px'
+                      }}
+                      title={day.count > 0 
+                        ? `${formatDateID(day.date)}: ${day.count} transaksi`
+                        : `${formatDateID(day.date)}: Tidak ada transaksi`
+                      }
+                    />
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Legenda - Di bawah, center */}
+      <div className={`mt-4 flex items-center justify-center gap-2 text-xs ${
+        darkMode ? "text-slate-400" : "text-slate-500"
+      }`}>
+        <span>Kurang</span>
+        <div className="flex gap-1">
+          {[0, 1, 2, 3, 4, 5].map((intensity) => (
+            <div
+              key={intensity}
+              className="w-[10px] h-[10px] rounded-sm"
+              style={{ backgroundColor: getColor(intensity) }}
+              title={`Level ${intensity}`}
+            />
+          ))}
+        </div>
+        <span>Lebih</span>
+      </div>
+    </div>
+  );
+};
+
 const StatCard = ({ label, value, className }) => (
   <div
-    className={`w-full rounded-3xl bg-gradient-to-br p-6 shadow-soft ${className}`}
+    className={`w-full rounded-3xl bg-gradient-to-br p-6 shadow-soft transition-all duration-300 hover:scale-105 hover:shadow-xl ${className}`}
   >
     <p className="text-xs uppercase tracking-[0.35em] text-white/70">
       {label}
     </p>
-    <p className="mt-3 text-3xl font-semibold">{value}</p>
+    <p className="mt-3 text-3xl font-semibold transition-all duration-300">{value}</p>
   </div>
 );
 
@@ -3719,12 +5681,18 @@ const Badge = ({ label, variant, size = "md" }) => {
   );
 };
 
-const EmptyState = () => (
-  <div className="rounded-2xl border border-dashed border-slate-200 py-14 text-center">
-    <p className="text-base font-semibold text-slate-800">
+const EmptyState = ({ darkMode = false }) => (
+  <div className={`rounded-2xl border border-dashed py-14 text-center ${
+    darkMode ? "border-slate-700" : "border-slate-200"
+  }`}>
+    <p className={`text-base font-semibold ${
+      darkMode ? "text-slate-200" : "text-slate-800"
+    }`}>
       Belum ada transaksi
     </p>
-    <p className="mt-1 text-sm text-slate-500">
+    <p className={`mt-1 text-sm ${
+      darkMode ? "text-slate-400" : "text-slate-500"
+    }`}>
       Mulai catat pemasukan atau pengeluaran pertama Anda.
     </p>
   </div>

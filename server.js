@@ -264,7 +264,7 @@ app.put(
   "/api/user/profile",
   auth.authenticateToken,
   asyncHandler(async (req, res) => {
-    const { name, email, timezone } = req.body ?? {};
+    const { name, email, timezone, password } = req.body ?? {};
     const userId = req.user.userId;
 
     if (name !== undefined && (!name || !name.trim())) {
@@ -279,6 +279,13 @@ app.put(
       return res.status(400).json({ message: "Format email tidak valid." });
     }
 
+    // Validate password if provided
+    if (password !== undefined && password !== null && password !== "") {
+      if (password.length < 6) {
+        return res.status(400).json({ message: "Password minimal 6 karakter." });
+      }
+    }
+
     // Validate timezone if provided
     if (timezone !== undefined) {
       // Basic validation - check if it's a valid timezone string
@@ -290,12 +297,24 @@ app.put(
     }
 
     try {
-      const updated = await database.updateUserProfile({
-        id: userId,
-        name,
-        email,
-        timezone,
-      });
+      // Update profile if name, email, or timezone provided
+      if (name !== undefined || email !== undefined || timezone !== undefined) {
+        await database.updateUserProfile({
+          id: userId,
+          name,
+          email,
+          timezone,
+        });
+      }
+
+      // Update password if provided
+      if (password !== undefined && password !== null && password !== "") {
+        const hashedPassword = await auth.hashPassword(password);
+        await database.updateUserPassword({ id: userId, passwordHash: hashedPassword });
+      }
+
+      // Get updated user
+      const updated = await database.getUserById(userId);
 
       if (!updated) {
         return res.status(404).json({ message: "User tidak ditemukan." });
@@ -410,6 +429,58 @@ app.get(
   })
 );
 
+// Create new user/admin
+app.post(
+  "/api/admin/users",
+  auth.authenticateToken,
+  auth.requireAdmin,
+  asyncHandler(async (req, res) => {
+    const { name, email, password, role } = req.body ?? {};
+    
+    // Validate input
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: "Nama, email, dan password wajib diisi." });
+    }
+    
+    if (password.length < 6) {
+      return res.status(400).json({ message: "Password minimal 6 karakter." });
+    }
+    
+    // Validate role if provided
+    const userRole = role && ['user', 'admin'].includes(role) ? role : 'user';
+    
+    try {
+      // Check if email already exists
+      const existingUser = await database.getUserByEmail(email);
+      if (existingUser) {
+        return res.status(400).json({ message: "Email sudah digunakan." });
+      }
+      
+      // Create user using auth.register but with role
+      const hashedPassword = await auth.hashPassword(password);
+      const newUser = await database.createUser({
+        email: email.toLowerCase().trim(),
+        passwordHash: hashedPassword,
+        name: name.trim(),
+        role: userRole,
+      });
+      
+      // Broadcast update ke semua admin
+      await broadcastAdminUpdate();
+      
+      res.status(201).json({
+        id: newUser.id,
+        email: newUser.email,
+        name: newUser.name,
+        role: newUser.role || 'user',
+        createdAt: newUser.created_at,
+      });
+    } catch (error) {
+      return res.status(400).json({ message: error.message || "Gagal membuat user." });
+    }
+  })
+);
+
 // Get user detail by ID
 app.get(
   "/api/admin/users/:id",
@@ -433,24 +504,37 @@ app.get(
   })
 );
 
-// Update user (admin can update name, email, role)
+// Update user (admin can update name, email, password, role)
 app.put(
   "/api/admin/users/:id",
   auth.authenticateToken,
   auth.requireAdmin,
   asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const { name, email, role } = req.body ?? {};
+    const { name, email, password, role } = req.body ?? {};
     
     // Validate role if provided
     if (role && !['user', 'admin'].includes(role)) {
       return res.status(400).json({ message: "Role harus 'user' atau 'admin'." });
     }
     
+    // Validate password if provided
+    if (password !== undefined && password !== null && password !== "") {
+      if (password.length < 6) {
+        return res.status(400).json({ message: "Password minimal 6 karakter." });
+      }
+    }
+    
     try {
       // Update profile if name or email provided
       if (name || email) {
         await database.updateUserProfile({ id, name, email });
+      }
+      
+      // Update password if provided
+      if (password !== undefined && password !== null && password !== "") {
+        const hashedPassword = await auth.hashPassword(password);
+        await database.updateUserPassword({ id, passwordHash: hashedPassword });
       }
       
       // Update role if provided
